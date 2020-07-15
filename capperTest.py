@@ -9,7 +9,7 @@ class CapperTest(unittest.TestCase):
             #print(read)
             i, j, k = 0, -1, 0
 
-            for left, right, bottom, top in read.minimizer_interval_iterator(start_fn=lambda x: x.minimizer_start, length=29):
+            for left, right, bottom, top in read.minimizer_interval_iterator(read.minimizers, start_fn=lambda x: x.minimizer_start, length=29):
                 #print(" Left {}, Right {}, Bottom {}, Top {}".format(left, right, bottom, top))
                 assert left < right
                 assert i <= left

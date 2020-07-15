@@ -3,17 +3,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 import time
 
-total_window_length = 29+11-1
 # negative infinity
 n_inf = float("-inf")
 
 def log_add(i, j):
     l = lambda x: math.log10(math.pow(10, x) + 1)
     if i < j:
-        return l(j - i) + i if j - i <= 7.5 else j
-    return l(i - j) + j if i - j <= 7.5 else i
+        return l(j - i) + i if j - i <= 10 else j
+    return l(i - j) + j if i - j <= 10 else i
 
 class Minimizer:
+    """
+    Represents a minimizer within a read.
+    """
+
+    total_window_length = 29 + 11 - 1 # Currently hard-coded, and therefore assumed the same for all minimizers
+
     def __init__(self, minimizer, minimizer_start, window_start, window_length, hits, hits_in_extension, read_length):
         self.minimizer, self.minimizer_start, self.window_start, self.window_length, self.hits, self.hits_in_extension = \
             minimizer, minimizer_start, window_start, window_length, hits, hits_in_extension
@@ -26,9 +31,13 @@ class Minimizer:
 
     def __str__(self):
         return "window_start: {} window_length: {} minimizer_start: {} minimizer_length: {} minimizer: {} hits: {} hits_in_extension: {}".\
-            format(self.window_start, self.window_length-total_window_length+1, self.minimizer_start, len(self.minimizer), self.minimizer, self.hits, self.hits_in_extension)
+            format(self.window_start, self.window_length-Minimizer.total_window_length+1, self.minimizer_start, len(self.minimizer), self.minimizer, self.hits, self.hits_in_extension)
 
 class Read:
+    """
+    Represents a read and its minimizers.
+    """
+
     def __init__(self, line, correct):
         # Format is tab sep:
         #READ_STRING QUAL_STRING (MINIMIZER_STRING START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN MAP_Q STAGE
@@ -40,21 +49,19 @@ class Read:
         self.correct = correct
         self.minimizers = sorted([ Minimizer(tokens[i+3], int(tokens[i+4]), int(tokens[i+5]), int(tokens[i+6]), int(tokens[i+7]), int(tokens[i+8]), len(self.read)) for i in range(0, len(tokens)-7, 6) ], key=lambda x : x.window_start) # Sort by start coordinate
         # Check they don't overlap and every window is accounted for
-        #- bug here
-        #print("Check read: \n", self)
         p_window = 0
         for minimizer in self.minimizers:
-            #print(minimizer)
             assert p_window == minimizer.window_start
-            p_window += minimizer.window_length - total_window_length + 1
-        assert p_window + total_window_length == len(self.read)+1
+            p_window += minimizer.window_length - Minimizer.total_window_length + 1
+        assert p_window + Minimizer.total_window_length == len(self.read)+1
 
     def __str__(self):
         return "Read map_q:{} adam_cap:{} xian_cap:{} \n".format(self.map_q, self.adam_cap, self.xian_cap) + "\n\t".join(map(str, self.minimizers)) + "\n"
 
-    def minimizer_interval_iterator(self, start_fn, length):
+    def minimizer_interval_iterator(self, minimizers, start_fn, length):
         """
         Iterator over common intervals of overlapping minimizers.
+        :param minimizers: the list of minimizers to iterate over
         :param start_fn: returns the start of the minimizer in the minimizer
         :param length: the length of the minimizer
         :return: yields sequence of (left, right, bottom, top) tuples, where left if the first base
@@ -63,12 +70,12 @@ class Read:
         in the interval (exclusive).
         """
         # Handle no minimizer case
-        if len(self.minimizers) == 0:
+        if len(minimizers) == 0:
             return
 
-        stack = [ self.minimizers[0] ]  # Minimizers currently being iterated over
-        left = [start_fn(self.minimizers[0])]  # The left end of a minimizer interval
-        bottom = [ 0 ]  # The index of the first minimizer in the interval in the sequence of minimizers
+        stack = [minimizers[0]]  # Minimizers currently being iterated over
+        left = [start_fn(minimizers[0])]  # The left end of a minimizer interval
+        bottom = [0]  # The index of the first minimizer in the interval in the sequence of minimizers
 
         def get_preceding_intervals(right):
             # Get all intervals that precede a given point "right"
@@ -91,7 +98,7 @@ class Read:
                     left[0] = right
 
         # For each minimizer in turn
-        for minimizer in self.minimizers[1:]:
+        for minimizer in minimizers[1:]:
             assert len(stack) > 0
 
             # For each new minimizer we return all intervals that
@@ -114,9 +121,9 @@ class Read:
         :return: log10 prob as float
         """
         assert left < right  # We don't allow zero length intervals
-        p = -self.qual_string[left] / 10
+        p = -(self.qual_string[left]) / 10
         for i in range(left+1, right):
-            p = sum_fn(-self.qual_string[i] / 10, p)
+            p = sum_fn(-(self.qual_string[i]) / 10, p)
         return p
 
     def get_log_prob_of_minimizer_skip(self, minimizer):
@@ -137,7 +144,9 @@ class Read:
         #    return n_inf
         #return math.log10(1.0 - minimizer.hits_in_extension/minimizer.hits)
 
-    def fast_cap(self, start_fn=lambda x: x.minimizer_start, minimizer_length=29, sum_fn=max):
+    def fast_cap(self, start_fn=lambda x: x.minimizer_start, minimizer_length=29,
+                 sum_fn=log_add, minimizer_filter_fn=lambda x : True,
+                 include_skip_prob=True):
         """ Compute cap on the reads qual score by considering possibility that base errors and unlocated
         minimizer hits prevented us finding the true alignment
 
@@ -146,15 +155,17 @@ class Read:
         :param sum_fn:
         :return: Phred scaled log prob of read being wrongly aligned
         """
-        c = np.full(len(self.minimizers) + 1, n_inf)  # Log10 prob of having mutated minimizers,
+        minimizer_filter_fn = lambda x : x.hits == 1 and x.hits_in_extension == 1
+        filtered_minimizers = list(filter(minimizer_filter_fn, self.minimizers))
+        c = np.full(len(filtered_minimizers) + 1, n_inf)  # Log10 prob of having mutated minimizers,
         # such that c[i+1] is log prob of mutating minimizers 0, 1, 2, ..., i
         c[0] = 0.0
 
         pBottom = 0
-        for left, right, bottom, top in self.minimizer_interval_iterator(start_fn=start_fn, length=minimizer_length):
+        for left, right, bottom, top in self.minimizer_interval_iterator(filtered_minimizers, start_fn=start_fn, length=minimizer_length):
             # If a new minimizer in the interval include probability of skipping the minimizer
-            if pBottom == bottom:
-                p = c[bottom] + self.get_log_prob_of_minimizer_skip(self.minimizers[bottom])
+            if pBottom == bottom and include_skip_prob:
+                p = c[bottom] + self.get_log_prob_of_minimizer_skip(filtered_minimizers[bottom])
                 if c[bottom+1] < p:
                     c[bottom+1] = p
                 pBottom += 1
@@ -167,82 +178,31 @@ class Read:
                 if c[i] < p:
                     c[i] = p
 
-        assert pBottom == len(self.minimizers)
+        if include_skip_prob:
+            assert pBottom == len(filtered_minimizers)
         assert c[-1] != n_inf
 
-        #print("He he", c)
         return -c[-1] * 10
 
-    def new_cap(self, sum_fn=log_add):
-        # Layout states
-        m = np.full(len(self.read) + 2, n_inf) # "Mismatch" bases plus start and end state
-        c = np.full(len(self.read) + 2, n_inf) # "Conserved" windows states
-        m[0] = 0.0 # Start state
-
-        # the log10 prob of conserving a window starting at position i, indexing read from 1
-        alpha = np.full(len(self.read)+2, n_inf)
-        for minimizer in self.minimizers:
-            p = n_inf if (minimizer.hits_in_extension == minimizer.hits and minimizer.hits_in_extension > 0) else 0.0 #math.log10(1.0 - minimizer.hits_in_clusters/minimizer.hits) if minimizer.hits_in_clusters < minimizer.hits else n_inf
-            #p = math.log10(1.0 - 1/minimizer.hits) if minimizer.hits_in_extension and minimizer.hits > 1 else n_inf
-            for k in range(minimizer.window_length-total_window_length + 1):
-                alpha[minimizer.window_start+k] = p
-
-        # the log10 prob of base error at position i, indexing read from 1
-        beta = np.full(len(self.read)+2, 0.0)
-        for i in range(len(self.read)):
-            beta[i+1] = -self.qual_string[i]/10
-
-        n_alpha = np.zeros(len(self.read)+2)  # log10 prob of NOT conserving a window
-        n_beta = np.zeros(len(self.read)+2)  # log10 prob of no base error at position i
-        for i in range(len(self.read)+2):
-            n_alpha[i] = math.log10(1.0 - math.pow(10, alpha[i])) if alpha[i] != 0.0 else n_inf
-            n_beta[i] = math.log10(1.0 - math.pow(10, beta[i])) if beta[i] != 0.0 else n_inf
-
-        # For each column in read, indexing positions from 1 and treating end state as first
-        # position beyond the end of the read
-        for i in range(1, len(self.read)+2):
-
-            # Calculate prob of conserved state
-            c[i] = alpha[i] + sum_fn(c[i-1], m[i-1])
-
-            # Calculate prob of mismatch state
-            t = beta[i]  # sum of beta and n_beta values for successively longer transitions
-            # Prob of transition from previous conserved states
-            if i - total_window_length >= 0:
-                m[i] = c[i-total_window_length] + n_alpha[i-total_window_length+1] + t
-            # Now probs of transitions from previous mismatch states
-            for j in range(i-1, max(0, i-total_window_length)-1, -1):
-                m[i] = sum_fn(t + n_alpha[j+1] + m[j], m[i])
-                t += n_beta[j]
-
-        #print(" Alphas ", alpha)
-        #print(" Beta ", beta)
-        #print(" Ms ", m)
-        #print(" Cs ", c)
-
-        return -10 * m[-1] # Return the end state prob log prob in phred scale
-
     @staticmethod
-    def parse_reads(reads_file, correct=True, maxReads=-1):
+    def parse_reads(reads_file, correct=True, max_reads=-1):
         reads = []
         with open(reads_file) as fh: # This masks a bug
             for line in fh:
                 try:
+                    # This is try/except loop is here because some minimizers contain overlapping windows and we ignore
+                    # those minimizers right now
                     reads.append(Read(line, correct))
-                    #print("Hello ", reads[-1])
-                    if reads[-1].map_q >= 60 and not correct and reads[-1].fast_cap() >= 60:
-                        print("Hello ", reads[-1], reads[-1].qual_string)
-                        print("Read ", "new cap:", reads[-1].new_cap(), " fast cap: ", reads[-1].fast_cap(), " original cap:", reads[-1].map_q, "adam cap:", reads[-1].adam_cap, "xian cap: ", reads[-1].xian_cap, "Correct: ", correct)
                 except:
                     pass
-                if maxReads != -1 and len(reads) > maxReads:
+                if max_reads != -1 and len(reads) > max_reads:
                     break
-        #print("Got {} reads, correct: {}", len(reads), correct)
         return reads
 
 class Reads:
-    def __init__(self, correct_reads_file, incorrect_reads_file):
-        self.reads = Read.parse_reads(incorrect_reads_file, False) + Read.parse_reads(correct_reads_file) #, maxReads=10000)
+    def __init__(self, correct_reads_file, incorrect_reads_file, max_correct_reads=-1, max_incorrect_reads=-1):
+        self.reads = Read.parse_reads(incorrect_reads_file, False, max_reads=max_incorrect_reads) + \
+                     Read.parse_reads(correct_reads_file, max_reads=max_correct_reads)
 
     def bin_reads(self, bin_fn):
         bins = {}
@@ -254,6 +214,11 @@ class Reads:
         return bins
 
     def get_roc(self, map_q_fn=lambda read : round(read.map_q)):
+        """
+        Compute a pseudo ROC curve for the reads
+        :param map_q_fn: function which determines which value is used as the map-q
+        :return:
+        """
         bins = self.bin_reads(bin_fn=map_q_fn)
         reads_seen, reads_correct = 0, 0
         roc_bins = []
@@ -266,20 +231,32 @@ class Reads:
 
     @staticmethod
     def plot_rocs(rocs):
-        colors = [ "r--", "bs", 'g^' ]
+        colors = [ "r--", "bs", 'g^' ] # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x : x[0], roc)), list(map(lambda x : x[1], roc)), color)
         plt.show()
 
 def main():
     start_time = time.time()
-    reads = Reads("minimizers_correct_1kg", "minimizers_incorrect_1kg")
+
+    # Parse the reads
+    reads = Reads("minimizers_correct_1kg", "minimizers_incorrect_1kg", max_correct_reads=10000)
     print("Got ", len(reads.reads), " in ", time.time()-start_time, " seconds")
+
+    # Print some of the funky reads
+    for read in reads.reads:
+        if read.map_q >= 60 and read.correct and read.adam_cap >= 60 and read.fast_cap() == 0:
+            print("Read ", " fast cap: ", read.fast_cap(), " original cap:", read.map_q,
+                  "adam cap:", read.adam_cap, "xian cap: ", read.xian_cap, "Correct: ", read.correct,
+                  "\n\n")
+            print("Hello ", read, read.qual_string, "\n\n")
+
+    # Make ROC curves
     roc_unmodified = reads.get_roc()
     print("Roc unmodified", roc_unmodified)
-    roc_adam_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.adam_cap, read.map_q)))
+    roc_adam_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.adam_cap, read.map_q, 60)))
     print("Roc adam modified ", roc_adam_modified)
-    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.fast_cap(), read.map_q)))
+    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.fast_cap()+30, read.map_q, 70)))
     print("Roc mode modified ", roc_new_sum_modified)
     Reads.plot_rocs([ roc_unmodified, roc_adam_modified, roc_new_sum_modified ])
 
