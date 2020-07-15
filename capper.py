@@ -56,7 +56,7 @@ class Read:
         assert p_window + Minimizer.total_window_length == len(self.read)+1
 
     def __str__(self):
-        return "Read map_q:{} adam_cap:{} xian_cap:{} \n".format(self.map_q, self.adam_cap, self.xian_cap) + "\n\t".join(map(str, self.minimizers)) + "\n"
+        return "Read map_q:{} adam_cap:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(self.map_q, self.adam_cap, self.xian_cap, self.fast_cap(), self.read, " ".join(map(str, self.qual_string))) + "\n\t".join(map(str, self.minimizers)) + "\n"
 
     def minimizer_interval_iterator(self, minimizers, start_fn, length):
         """
@@ -245,18 +245,15 @@ def main():
 
     # Print some of the funky reads
     for read in reads.reads:
-        if read.map_q >= 60 and read.correct and read.adam_cap >= 60 and read.fast_cap() == 0:
-            print("Read ", " fast cap: ", read.fast_cap(), " original cap:", read.map_q,
-                  "adam cap:", read.adam_cap, "xian cap: ", read.xian_cap, "Correct: ", read.correct,
-                  "\n\n")
-            print("Hello ", read, read.qual_string, "\n\n")
+        if not read.correct and read.map_q >= 60 and read.fast_cap() >= 60:
+            print(read)
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
     print("Roc unmodified", roc_unmodified)
-    roc_adam_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.adam_cap, read.map_q, 60)))
+    roc_adam_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.adam_cap, read.map_q, 150)))
     print("Roc adam modified ", roc_adam_modified)
-    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.fast_cap()+30, read.map_q, 70)))
+    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda read : round(min(read.fast_cap()+30, read.map_q, 150)))
     print("Roc mode modified ", roc_new_sum_modified)
     Reads.plot_rocs([ roc_unmodified, roc_adam_modified, roc_new_sum_modified ])
 
