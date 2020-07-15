@@ -244,9 +244,9 @@ def main():
     print("Got ", len(reads.reads), " in ", time.time()-start_time, " seconds")
 
     # Print some of the funky reads
-    for read in reads.reads:
+    for i, read in enumerate(reads.reads):
         if not read.correct and read.map_q >= 60 and read.fast_cap() >= 60:
-            print(read)
+            print("Read {}".format(i), read)
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
