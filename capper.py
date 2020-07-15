@@ -148,15 +148,36 @@ class Read:
                  sum_fn=log_add, minimizer_filter_fn=lambda x : True,
                  include_skip_prob=True):
         """ Compute cap on the reads qual score by considering possibility that base errors and unlocated
-        minimizer hits prevented us finding the true alignment
+        minimizer hits prevented us finding the true alignment.
+
+        Algorithm uses a "sweep line" dynamic programming approach.
+        For a read with minimizers aligned to it:
+
+                     000000000011111111112222222222
+                     012345678901234567890123456789
+        Read:        ******************************
+        Minimizer 1:    *****
+        Minimizer 2:       *****
+        Minimizer 3:                   *****
+        Minimizer 4:                      *****
+
+        For each distinct read interval of overlapping minimizers, e.g. in the example
+        the intervals 3,4,5; 6,7; 8,9,10; 18,19,20; 21,22; and 23,24,25
+        we consider base errors that would result in the minimizers in the interval being incorrect
+
+        We use dynamic programming sweeping left-to-right over the intervals to compute the probability of the minimum number
+        of base errors needed to disrupt all the minimizers, or for the minimizers to have not been located within extensions.
 
         :param start_fn: Function that returns start of the minimizer
         :param minimizer_length: Length of the minimizer
-        :param sum_fn:
+        :param sum_fn: method for adding up probability of one or more base errors in an interval of bases
         :return: Phred scaled log prob of read being wrongly aligned
         """
+        # This step filters minimizers we will definitely skip - needs to be coordinated with get_log_prob_of_minimizer_skip
+        # function above
         minimizer_filter_fn = lambda x : x.hits == 1 and x.hits_in_extension == 1
         filtered_minimizers = list(filter(minimizer_filter_fn, self.minimizers))
+
         c = np.full(len(filtered_minimizers) + 1, n_inf)  # Log10 prob of having mutated minimizers,
         # such that c[i+1] is log prob of mutating minimizers 0, 1, 2, ..., i
         c[0] = 0.0
@@ -164,7 +185,7 @@ class Read:
         pBottom = 0
         for left, right, bottom, top in self.minimizer_interval_iterator(filtered_minimizers, start_fn=start_fn, length=minimizer_length):
             # If a new minimizer in the interval include probability of skipping the minimizer
-            if pBottom == bottom and include_skip_prob:
+            if include_skip_prob and pBottom == bottom:
                 p = c[bottom] + self.get_log_prob_of_minimizer_skip(filtered_minimizers[bottom])
                 if c[bottom+1] < p:
                     c[bottom+1] = p
@@ -173,11 +194,12 @@ class Read:
             # Calculate prob of all intervals up to top being disrupted
             p = c[bottom] + self.get_log_prob_of_base_error_in_interval(left, right, sum_fn=sum_fn)
 
-            # Replace min-prob for intervals
+            # Replace min-prob for minimizers in the interval
             for i in range(bottom+1, top+1):
                 if c[i] < p:
                     c[i] = p
 
+        # Checks
         if include_skip_prob:
             assert pBottom == len(filtered_minimizers)
         assert c[-1] != n_inf
