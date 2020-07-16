@@ -1,4 +1,6 @@
 import math
+import matplotlib
+matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import time
@@ -275,7 +277,7 @@ class Reads:
         colors = ["r--", "bs", 'g^']  # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x: x[0], roc)), list(map(lambda x: x[1], roc)), color)
-        plt.show()
+        plt.savefig('roc.svg')
 
 
 def main():
