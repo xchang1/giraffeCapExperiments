@@ -3,8 +3,13 @@ import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+import sys
 import time
 
+RC_TABLE = str.maketrans("ACGT", "TGCA")
+def reverse_complement(dna):
+    return dna.translate(RC_TABLE)
+    
 # negative infinity
 n_inf = float("-inf")
 
@@ -24,13 +29,21 @@ class Minimizer:
 
     total_window_length = 29 + 11 - 1  # Currently hard-coded, and therefore assumed the same for all minimizers
 
-    def __init__(self, minimizer, minimizer_start, window_start, window_length, hits, hits_in_extension, read_length):
+    def __init__(self, minimizer, minimizer_start, window_start, window_length, hits, hits_in_extension, source_read):
         self.minimizer, self.minimizer_start, self.window_start = minimizer, minimizer_start, window_start
         self.window_length, self.hits, self.hits_in_extension = window_length, hits, hits_in_extension
-        # Sanity checks
-        assert read_length >= 0
-        assert minimizer_start >= 0 and minimizer_start + len(minimizer) <= read_length
-        assert window_start >= 0 and window_start + window_length <= read_length
+        
+        if self.minimizer != source_read[minimizer_start:minimizer_start + len(self.minimizer)]:
+            # It's a reverse strand minimizer
+            self.is_reverse = True
+            assert reverse_complement(self.minimizer) == source_read[minimizer_start:minimizer_start + len(self.minimizer)]
+        else:
+            self.is_reverse = False
+        
+        # Consistency checks
+        assert len(source_read) >= 0
+        assert minimizer_start >= 0 and minimizer_start + len(minimizer) <= len(source_read)
+        assert window_start >= 0 and window_start + window_length <= len(source_read)
         assert window_start <= minimizer_start
         assert window_start + window_length >= minimizer_start + len(minimizer)
 
@@ -57,7 +70,7 @@ class Read:
             float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
         self.correct = correct
         self.minimizers = sorted([Minimizer(tokens[i + 3], int(tokens[i + 4]), int(tokens[i + 5]), int(tokens[i + 6]),
-                                            int(tokens[i + 7]), int(tokens[i + 8]), len(self.read)) for i in
+                                            int(tokens[i + 7]), int(tokens[i + 8]), self.read) for i in
                                   range(0, len(tokens) - 7, 6)],
                                  key=lambda x: x.window_start)  # Sort by start coordinate
         # Check they don't overlap and every window is accounted for
@@ -71,6 +84,51 @@ class Read:
         return "Read map_q:{} adam_cap:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
             self.map_q, self.adam_cap, self.xian_cap, self.fast_cap(), self.read,
             " ".join(map(str, self.qual_string))) + "\n\t".join(map(str, self.minimizers)) + "\n"
+            
+    def visualize(self, out=sys.stdout):
+        """
+        Print out the read sequence with the minimizers aligned below it.
+        """
+        
+        # First all the position numbers
+        
+        # Work out how namy digits we need for position
+        digits = int(math.ceil(math.log10(len(self.read))))
+        # Pad each number to that width
+        texts = [('{:>' + str(digits) + '}').format(i) for i in range(len(self.read))]
+        
+        for row in range(digits):
+            # For each digit we need
+            for text in texts:
+               # Print that digit of each padded number
+               out.write(text[row])
+            out.write('\n')
+            
+        # Then the sequence
+        out.write(self.read)
+        out.write('\n')
+        
+        # Then the minimizers
+        for minimizer in self.minimizers:
+            # Work out what orientation to print
+            minimizer_text = minimizer.minimizer if not minimizer.is_reverse else reverse_complement(minimizer.minimizer)
+            for i in range(len(self.read)):
+                if i < minimizer.window_start:
+                    # Before agglomeration
+                    out.write(' ')
+                elif i < minimizer.minimizer_start:
+                    # In agglomeration before minimizer
+                    out.write('-')
+                elif i < minimizer.minimizer_start + len(minimizer.minimizer):
+                    # In minimizer
+                    out.write(minimizer_text[i - minimizer.minimizer_start])
+                elif i < minimizer.window_start + minimizer.window_length:
+                    # In agglomeration after minimizer (before required agglomeration length has elapsed)
+                    out.write('-')
+                else:
+                    # After minimizer
+                    out.write(' ')
+            out.write('\n')
 
     def minimizer_interval_iterator(self, minimizers, start_fn, length):
         """
@@ -151,7 +209,7 @@ class Read:
             return 0.0
         if minimizer.hits_in_extension == 0:  # Case no hits are in extensions so must skip
             return 0.0
-        if minimizer.hits > 1:
+        if minimizer.hits > 1: # TODO: why does skipping any non-unique minimizers improve things?
             return 0.0
         return n_inf
 
