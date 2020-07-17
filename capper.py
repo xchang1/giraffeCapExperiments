@@ -142,6 +142,10 @@ class Minimizer:
         # At hash = 0 you cannot beat it.
         # At hash = 1 only 1 of the 2^64 possibilities beats it.
         return self.hash()/(2**64)
+        
+        
+class UnacceptableReadError(RuntimeError):
+    pass
 
 class Read:
     """
@@ -163,12 +167,17 @@ class Read:
                                   range(0, len(tokens) - 7, 6)],
                                  key=lambda x: x.window_start)  # Sort by start coordinate
         # Check they don't overlap and every window is accounted for
+        # TODO: This isn't always true
         p_window = 0
         for minimizer in self.minimizers:
-            assert p_window == minimizer.window_start
+            if p_window != minimizer.window_start:
+                # Read contains duplicate minimizers and can't be handled
+                raise UnacceptableReadError()
             p_window += minimizer.window_length - Minimizer.total_window_length + 1
-        assert p_window + Minimizer.total_window_length == len(self.read) + 1
-
+        if p_window + Minimizer.total_window_length != len(self.read) + 1:
+            # Read contains duplicate minimizers and can't be handled
+            raise UnacceptableReadError()
+            
     def __str__(self):
         return "Read map_q:{} adam_cap:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
             self.map_q, self.adam_cap, self.xian_cap, self.fast_cap(), self.read,
@@ -565,9 +574,8 @@ class Read:
                     # This is try/except loop is here because some minimizers contain overlapping windows and we ignore
                     # those minimizers right now
                     reads.append(Read(line, correct))
-                    print(reads[-1])
-                except AssertionError:
-                    raise
+                except UnacceptableReadError:
+                    # Skip reads we can't deal with
                     pass
                 if max_reads != -1 and len(reads) > max_reads:
                     break
