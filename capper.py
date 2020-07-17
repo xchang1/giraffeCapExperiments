@@ -5,8 +5,11 @@ matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import heapq
+import logging
 import sys
 import time
+
+logger = logging.getLogger(__name__)
 
 RC_TABLE = str.maketrans("ACGT", "TGCA")
 def reverse_complement(dna):
@@ -147,7 +150,7 @@ class Read:
 
     def __init__(self, line, correct):
         # Format is tab sep:
-        # READ_STR QUAL_STR (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN MAP_Q STAGE
+        # READ_STR QUAL_STR IGNORED (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN MAP_Q CAP CAP STAGE
         tokens = line.split()
         self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
         assert len(self.read) == len(self.qual_string)
@@ -167,8 +170,8 @@ class Read:
         assert p_window + Minimizer.total_window_length == len(self.read) + 1
 
     def __str__(self):
-        return "Read map_q:{} adam_cap:{} recomputed:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
-            self.map_q, self.adam_cap, self.recompute_adam_cap(), self.xian_cap, self.fast_cap(), self.read,
+        return "Read map_q:{} adam_cap:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
+            self.map_q, self.adam_cap, self.xian_cap, self.fast_cap(), self.read,
             " ".join(map(str, self.qual_string))) + "\n\t".join(map(str, self.minimizers)) + "\n"
             
     def visualize(self, out=sys.stdout):
@@ -232,8 +235,9 @@ class Read:
         next_minimizer = 0
         
         if len(minimizers) == 0:
-            # No minimizers left = we can't be in the right place.
-            return 0
+            # No minimizers left = can't cap
+            # Should probably actually treat as 0.
+            return float('inf')
         
         # Make a DP table of Phred score for cheapest solution up to here, with an error at this base
         table = np.full(len(self.read), n_inf)
@@ -253,71 +257,101 @@ class Read:
         for i in range(len(self.read)):
             # Go through all the bases in the read.
             
+            logger.debug("At base %d", i)
+            
             while next_minimizer < len(minimizers) and minimizers[next_minimizer].window_start == i:
+                
                 # While the next agglomeration starts here
                 agg = minimizers[next_minimizer]
                 # Put it in the queue
                 heapq.heappush(active_agglomerations, (agg.window_start + agg.window_length, -agg.window_start, agg))
                 
-                for window_offset in range(agg.total_window_length - len(agg.minimizer) + 1):
+                logger.debug("Agglomeration starts here: %s", agg)
+                
+                for window_offset in range(agg.window_length - agg.total_window_length + 1):
                     # And also all its windows
                     # Represent them as end, start for sort order
-                    heapq.heappush(active_windows, (agg.window_start + window_offset + len(agg.minimizer), -(agg.window_start + window_offset)))
+                    heapq.heappush(active_windows, (agg.window_start + window_offset + agg.total_window_length, -(agg.window_start + window_offset)))
+                    
+                    logger.debug("Creates window %d to %d", agg.window_start + window_offset, agg.window_start + window_offset + agg.total_window_length)
                     
                 # Move on to the next minimizer
                 next_minimizer += 1
                    
-            # Phred cost of an error here
-            base_cost = self.qual_string[i]
+            if len(active_agglomerations) == 0:
+                # Nothing to do here
+                logger.debug("Ignore base: no agglomerations")
+            else:
                    
-            for _, _, active_agg in active_agglomerations:
-                # For each minimizer this base is in an agglomeration of (i.e. that
-                # is active)
+                # Phred cost of an error here
+                base_cost = self.qual_string[i]
                 
-                # Work out the Phred cost of breaking the minimizer for
-                # the windows of it that we overlap by having an error here
-                
-                if i >= active_agg.minimizer_start and i < active_agg.minimizer_start + len(active_agg.minimizer):
-                    # We are in the minimizer itself.
-                    # No cost to break
-                    minimizer_break_score = 0 
-                else:
-                    # We are in the flank.
+                logger.debug("Cost to break base: %f", base_cost)
+                for _, _, active_agg in active_agglomerations:
+                    # For each minimizer this base is in an agglomeration of (i.e. that
+                    # is active)
                     
-                    # How many new possible minimizers would an error here create in this agglomeration, to compete with its minimizer?
-                    # No more than one per position in a minimizer sequence.
-                    # No more than 1 per base from the start of the agglomeration to here, inclusive.
-                    # No more than 1 per base from here to the last base of the agglomeration, inclusive.
-                    possible_minimizers = min(len(active_agg.minimizer),
-                                              min(i - active_agg.window_start + 1, 
-                                                 (active_agg.window_start + active_agg.window_length) - i))
+                    logger.debug("Overlap agglomeration: %s", active_agg)
+                    
+                    # Work out the Phred cost of breaking the minimizer for
+                    # the windows of it that we overlap by having an error here
+                    
+                    if i >= active_agg.minimizer_start and i < active_agg.minimizer_start + len(active_agg.minimizer):
+                        # We are in the minimizer itself.
+                        # No cost to break
+                        minimizer_break_score = 0
+                        logger.debug("In minimizer: no additional cost")
+                    else:
+                        # We are in the flank.
+                        
+                        # How many new possible minimizers would an error here create in this agglomeration, to compete with its minimizer?
+                        # No more than one per position in a minimizer sequence.
+                        # No more than 1 per base from the start of the agglomeration to here, inclusive.
+                        # No more than 1 per base from here to the last base of the agglomeration, inclusive.
+                        possible_minimizers = min(len(active_agg.minimizer),
+                                                  min(i - active_agg.window_start + 1, 
+                                                     (active_agg.window_start + active_agg.window_length) - i))
+                                                     
+                        # How probable is it to beat the current minimizer?
+                        beat_prob = active_agg.beat_prob()
 
-                    # We have that many chances to beat this minimizer. What's that in Phred?
-                    minimizer_break_score = log10prob_to_phred(log10prob_for_at_least_one(active_agg.beat_prob(), possible_minimizers))
+                        # We have that many chances to beat this minimizer. What's that in Phred?
+                        minimizer_break_score = log10prob_to_phred(log10prob_for_at_least_one(beat_prob, possible_minimizers))
+                        
+                        logger.debug("Out of minimizer: need to beat with probability %f and %d chances for %f points", beat_prob, possible_minimizers, minimizer_break_score)
+                    
+                    # And AND them all up
+                    base_cost += minimizer_break_score
                 
-                # And AND them all up
-                base_cost += minimizer_break_score
-            
-            if prev_window is not None:
-                # AND that with the cheapest thing in the latest-starting window ending before here
-                base_cost += np.min(table[prev_window[0]:prev_window[1]])
-                
-            # Save into the DP table
-            table[i] = base_cost
+                if prev_window is not None:
+                    # AND that with the cheapest thing in the latest-starting window ending before here
+                    prev_cost = np.min(table[prev_window[0]:prev_window[1]])
+                    logger.debug("Cheapest previous base in %d to %d is %f", prev_window[0], prev_window[1], prev_cost)
+                    base_cost += prev_cost
+                    
+                logger.debug("Total cost for best solution ending in this base: %f", base_cost)
+                    
+                # Save into the DP table
+                table[i] = base_cost
             
             # Kick out agglomerations and windows we have passed
             
             while len(active_agglomerations) > 0 and active_agglomerations[0][0] == i + 1:
                 # We are the last base in this agglomeration.
                 # Pop it. It won't be active anymore.
+                logger.debug("End agglomeration: %s", active_agglomerations[0][2])
                 heapq.heappop(active_agglomerations)
             
             while len(active_windows) > 0 and active_windows[0][0] == i + 1:
                 # We are the last base in this window
+                
+                logger.debug("End window %s to %s", -active_windows[0][1], active_windows[0][0])
+                
                 if prev_window is None or prev_window[0] < -active_windows[0][1]:
                     # We have no latest-starting window ending before here, or this one starts later.
                     # Take it (making sure to decode its weird encoding)
                     prev_window = (-active_windows[0][1], active_windows[0][0])
+                    logger.debug("It is new latest-starting window ending before here")
                 # Pop it
                 heapq.heappop(active_windows)
             
@@ -325,7 +359,9 @@ class Read:
             
         # Scan the latest-ending, latest-starting window to find the total cost.
         assert prev_window is not None
-        return np.min(table[prev_window[0]:prev_window[1]])
+        winner = np.min(table[prev_window[0]:prev_window[1]])
+        logger.debug("Cheapest answer in final window %d to %d is %f", prev_window[0], prev_window[1], winner)
+        return winner
 
     def minimizer_interval_iterator(self, minimizers, start_fn=lambda x: x.minimizer_start, length=29):
         """
