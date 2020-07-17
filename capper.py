@@ -1,14 +1,16 @@
+from ctypes import c_uint64
 import math
 import matplotlib
 matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
+import heapq
 import sys
 import time
 
 RC_TABLE = str.maketrans("ACGT", "TGCA")
 def reverse_complement(dna):
-    return dna.translate(RC_TABLE)
+    return ''.join(reversed(dna.translate(RC_TABLE)))
     
 # negative infinity
 n_inf = float("-inf")
@@ -20,8 +22,39 @@ def log_add(i, j):
     if i < j:
         return log_add_one(j - i) + i if j - i <= 10 else j
     return log_add_one(i - j) + j if i - j <= 10 else i
+    
 
+def prob_to_log10prob(prob):
+    """
+    Convert a raw probability to a log10 probability.
+    """
+    
+    return math.log10(prob)
 
+def log10prob_to_phred(log10prob):
+    """
+    Convert a log10 probability to a Phred score.
+    
+    :return: the Phred score as a float
+    """
+    
+    return -10 * log10prob
+    
+def log10prob_for_at_least_one(prob_each, count):
+    """
+    Return the log10 probability for at least one event happening, out of count
+    chances each with independent raw probability log10_prob_each.
+    """
+    
+    return log10prob_not(prob_to_log10prob(1.0 - prob_each) * count)
+    
+def log10prob_not(log10prob):
+    """
+    Return the log10 probability for the opposite of an event with the given log10 probability.
+    """
+    
+    return math.log10(1.0 - math.pow(10, log10prob))
+    
 class Minimizer:
     """
     Represents a minimizer within a read.
@@ -78,17 +111,21 @@ class Minimizer:
         :return: the minimizer's hash value as a nonnegative int in 64 bits
         """
         
-        # Work with Numpy unsigned 64-bit ints to match C's overflow behavior
-        scratch = np.uint64(self.encode())
+        # Numpy 64 bit ints warn on overflow and ctypes 64 bit ints don't implement inportant ops like xor.
+        # So we use Python bigints and mask frequently.
+        mask = 0xFFFFFFFFFFFFFFFF
+        
+        scratch = self.encode() & mask
+        
         # Implement Thomas Wang's 64 bit integer hash function as in gbwt library
-        scratch = (~scratch) + (scratch << np.uint64(21)) 
-        scratch = scratch ^ (scratch >> np.uint64(24))
-        scratch = (scratch + (scratch << np.uint64(3))) + (scratch << np.uint64(8))
-        scratch = scratch ^ (scratch >> np.uint64(14))
-        scratch = (scratch + (scratch << np.uint64(2))) + (scratch << np.uint64(4))
-        scratch = scratch ^ (scratch >> np.uint64(28))
-        scratch = scratch + (scratch << np.uint64(31))
-        return int(scratch);
+        scratch = ((scratch ^ mask) + ((scratch << 21) & mask)) & mask
+        scratch = scratch ^ (scratch >> 24)
+        scratch = (((scratch + ((scratch << 3)) & mask) & mask) + ((scratch << 8) & mask)) & mask
+        scratch = (scratch ^ (scratch >> 14)) & mask
+        scratch = (((scratch + ((scratch << 2) & mask)) & mask) + ((scratch << 4) & mask)) & mask
+        scratch = (scratch ^ (scratch >> 28)) & mask
+        scratch = (scratch + ((scratch << 31) & mask)) & mask
+        return scratch
         
     def beat_prob(self):
         """
@@ -130,8 +167,8 @@ class Read:
         assert p_window + Minimizer.total_window_length == len(self.read) + 1
 
     def __str__(self):
-        return "Read map_q:{} adam_cap:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
-            self.map_q, self.adam_cap, self.xian_cap, self.fast_cap(), self.read,
+        return "Read map_q:{} adam_cap:{} recomputed:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
+            self.map_q, self.adam_cap, self.recompute_adam_cap(), self.xian_cap, self.fast_cap(), self.read,
             " ".join(map(str, self.qual_string))) + "\n\t".join(map(str, self.minimizers)) + "\n"
             
     def visualize(self, out=sys.stdout):
@@ -178,6 +215,117 @@ class Read:
                     # After minimizer
                     out.write(' ')
             out.write('\n')
+            
+    def recompute_adam_cap(self):
+        """
+        Recompute the "Adam Cap": probability of the most probable way to have
+        errors at a set of bases, such that each error disrupts all minimizers
+        whose agglomerations it hits, in order to disrupt all minimizers that
+        were explored. Explored is defined as having participated in any
+        extended cluster.
+        
+        :return: Phred scaled log prob of read being wrongly aligned
+        """
+        
+        # Filter down to just located minimizers
+        minimizers = [m for m in self.minimizers if m.hits_in_extension > 0]
+        next_minimizer = 0
+        
+        if len(minimizers) == 0:
+            # No minimizers left = we can't be in the right place.
+            return 0
+        
+        # Make a DP table of Phred score for cheapest solution up to here, with an error at this base
+        table = np.full(len(self.read), n_inf)
+        
+        # Have a priority queue of agglomerations, with earliest-ending and then latest-starting being at the front
+        # Agglomerations are (end, -start, minimizer)
+        active_agglomerations = []
+        
+        # Have another priority queue of windows, with earliest-ending and then latest-starting being at the front
+        # Windows are (end, -start)
+        # These aren't all overlapped, but none have ended yet.
+        active_windows = []
+        
+        # Track the latest-starting window ending before here, as (start, end), if any
+        prev_window = None
+        
+        for i in range(len(self.read)):
+            # Go through all the bases in the read.
+            
+            while next_minimizer < len(minimizers) and minimizers[next_minimizer].window_start == i:
+                # While the next agglomeration starts here
+                agg = minimizers[next_minimizer]
+                # Put it in the queue
+                heapq.heappush(active_agglomerations, (agg.window_start + agg.window_length, -agg.window_start, agg))
+                
+                for window_offset in range(agg.total_window_length - len(agg.minimizer) + 1):
+                    # And also all its windows
+                    # Represent them as end, start for sort order
+                    heapq.heappush(active_windows, (agg.window_start + window_offset + len(agg.minimizer), -(agg.window_start + window_offset)))
+                    
+                # Move on to the next minimizer
+                next_minimizer += 1
+                   
+            # Phred cost of an error here
+            base_cost = self.qual_string[i]
+                   
+            for _, _, active_agg in active_agglomerations:
+                # For each minimizer this base is in an agglomeration of (i.e. that
+                # is active)
+                
+                # Work out the Phred cost of breaking the minimizer for
+                # the windows of it that we overlap by having an error here
+                
+                if i >= active_agg.minimizer_start and i < active_agg.minimizer_start + len(active_agg.minimizer):
+                    # We are in the minimizer itself.
+                    # No cost to break
+                    minimizer_break_score = 0 
+                else:
+                    # We are in the flank.
+                    
+                    # How many new possible minimizers would an error here create in this agglomeration, to compete with its minimizer?
+                    # No more than one per position in a minimizer sequence.
+                    # No more than 1 per base from the start of the agglomeration to here, inclusive.
+                    # No more than 1 per base from here to the last base of the agglomeration, inclusive.
+                    possible_minimizers = min(len(active_agg.minimizer),
+                                              min(i - active_agg.window_start + 1, 
+                                                 (active_agg.window_start + active_agg.window_length) - i))
+
+                    # We have that many chances to beat this minimizer. What's that in Phred?
+                    minimizer_break_score = log10prob_to_phred(log10prob_for_at_least_one(active_agg.beat_prob(), possible_minimizers))
+                
+                # And AND them all up
+                base_cost += minimizer_break_score
+            
+            if prev_window is not None:
+                # AND that with the cheapest thing in the latest-starting window ending before here
+                base_cost += np.min(table[prev_window[0]:prev_window[1]])
+                
+            # Save into the DP table
+            table[i] = base_cost
+            
+            # Kick out agglomerations and windows we have passed
+            
+            while len(active_agglomerations) > 0 and active_agglomerations[0][0] == i + 1:
+                # We are the last base in this agglomeration.
+                # Pop it. It won't be active anymore.
+                heapq.heappop(active_agglomerations)
+            
+            while len(active_windows) > 0 and active_windows[0][0] == i + 1:
+                # We are the last base in this window
+                if prev_window is None or prev_window[0] < -active_windows[0][1]:
+                    # We have no latest-starting window ending before here, or this one starts later.
+                    # Take it (making sure to decode its weird encoding)
+                    prev_window = (-active_windows[0][1], active_windows[0][0])
+                # Pop it
+                heapq.heappop(active_windows)
+            
+        # Now the DP table is filled
+            
+        # Scan the latest-ending, latest-starting window to find the total cost.
+        assert prev_window is not None
+        return np.min(table[prev_window[0]:prev_window[1]])
 
     def minimizer_interval_iterator(self, minimizers, start_fn=lambda x: x.minimizer_start, length=29):
         """
@@ -383,6 +531,7 @@ class Read:
                     reads.append(Read(line, correct))
                     print(reads[-1])
                 except AssertionError:
+                    raise
                     pass
                 if max_reads != -1 and len(reads) > max_reads:
                     break
