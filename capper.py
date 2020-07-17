@@ -49,10 +49,59 @@ class Minimizer:
 
     def __str__(self):
         return "window_start: {} window_length: {} minimizer_start: {} " \
-               "minimizer_length: {} minimizer: {} hits: {} hits_in_extension: {}". \
+               "minimizer_length: {} minimizer: {} hits: {} hits_in_extension: {} hash: {:016x} beat_prob: {}". \
             format(self.window_start, self.window_length - Minimizer.total_window_length + 1, self.minimizer_start,
-                   len(self.minimizer), self.minimizer, self.hits, self.hits_in_extension)
-
+                   len(self.minimizer), self.minimizer, self.hits, self.hits_in_extension, self.hash(), self.beat_prob())
+                   
+    def encode(self):
+        """
+        Encode the minimizer as an integer.
+        
+        :return: the minimizer 2-bit encoded as A=0, C=1, G=2, T=3, last base
+        in least significant position.
+        """
+        
+        encoding = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
+        encoded = 0
+        for base in self.minimizer:
+            # Check the base for acceptability
+            assert base in encoding
+            # Encode and shift in each base.
+            encoded = (encoded << 2 | encoding[base])
+        return encoded
+            
+    def hash(self):
+        """
+        Get the integer hash value of the current minimizer.
+        Hashes are over the 2^64 space.
+        
+        :return: the minimizer's hash value as a nonnegative int in 64 bits
+        """
+        
+        # Work with Numpy unsigned 64-bit ints to match C's overflow behavior
+        scratch = np.uint64(self.encode())
+        # Implement Thomas Wang's 64 bit integer hash function as in gbwt library
+        scratch = (~scratch) + (scratch << np.uint64(21)) 
+        scratch = scratch ^ (scratch >> np.uint64(24))
+        scratch = (scratch + (scratch << np.uint64(3))) + (scratch << np.uint64(8))
+        scratch = scratch ^ (scratch >> np.uint64(14))
+        scratch = (scratch + (scratch << np.uint64(2))) + (scratch << np.uint64(4))
+        scratch = scratch ^ (scratch >> np.uint64(28))
+        scratch = scratch + (scratch << np.uint64(31))
+        return int(scratch);
+        
+    def beat_prob(self):
+        """
+        Work out how easy this minimizer is to beat.
+        
+        :return: a float on 0-1 that represents the probability of beating this
+        minimizer's hash with a random other minimizer.
+        """
+        
+        # At hash = 2^64 - 1, you are almost certain to beat it, unless you actually hit it, in which case you won't beat it.
+        # At hash = 0 you cannot beat it.
+        # At hash = 1 only 1 of the 2^64 possibilities beats it.
+        return self.hash()/(2**64)
 
 class Read:
     """
@@ -130,55 +179,96 @@ class Read:
                     out.write(' ')
             out.write('\n')
 
-    def minimizer_interval_iterator(self, minimizers, start_fn, length):
+    def minimizer_interval_iterator(self, minimizers, start_fn=lambda x: x.minimizer_start, length=29):
         """
         Iterator over common intervals of overlapping minimizers.
+        
         :param minimizers: the list of minimizers to iterate over
         :param start_fn: returns the start of the minimizer in the minimizer
         :param length: the length of the minimizer
+        
         :return: yields sequence of (left, right, bottom, top) tuples, where left if the first base
         of the minimizer interval (inclusive), right is the last base of the minimizer interval (exclusive),
         bottom is the index of the first minimizer in the interval and top is the index of the last minimizer
         in the interval (exclusive).
         """
-        # Handle no minimizer case
-        if len(minimizers) == 0:
+        
+        return self.overlap_interval_iterator(minimizers, start_fn, lambda x: length)
+        
+            
+    def agglomeration_interval_iterator(self, minimizers, start_fn=lambda x: x.window_start, length_fn=lambda x: x.window_length):
+        """
+        Iterator over common intervals of overlapping minimizer agglomerations.
+        
+        :param minimizers: the list of minimizers to iterate over
+        :param start_fn: given a minimizer, returns the start of its agglomeration.
+        :param length_fn: given a minimizer, returns the length of its agglomeration.
+        
+        :return: yields sequence of (left, right, bottom, top) tuples, where
+        left is the first base of the agglomeration interval (inclusive), right
+        is the last base of the agglomeration interval (exclusive), bottom is
+        the index of the first minimizer with an agglomeration in the interval
+        and top is the index of the last minimizer with an agglomeration in the
+        interval (exclusive).
+        """
+        
+        return self.overlap_interval_iterator(minimizers, start_fn, length_fn)
+
+    def overlap_interval_iterator(self, items, start_fn, length_fn):
+        """
+        Iterator over common intervals (rectangles) of overlapping items.
+        Common intervals break when an item starts or ends.
+        Assumes items are arranged such that they do not contain each other.
+        Assumes items are sorted.
+        
+        :param items: the list of items to iterate over.
+        :param start_fn: given an item, returns the start of an item.
+        :param length_fn: given an item, returns the length of the item.
+        
+        :return: yields sequence of (left, right, bottom, top) tuples, where
+        left is the first base of the interval (inclusive), right is the last
+        base of the interval (exclusive), bottom is the index of the first item
+        in the interval and top is the index of the last item in the interval
+        (exclusive).
+        """
+        # Handle no item case
+        if len(items) == 0:
             return
 
-        stack = [minimizers[0]]  # Minimizers currently being iterated over
-        left = [start_fn(minimizers[0])]  # The left end of a minimizer interval
-        bottom = [0]  # The index of the first minimizer in the interval in the sequence of minimizers
+        stack = [items[0]]  # Items currently being iterated over
+        left = [start_fn(items[0])]  # The left end of an item interval
+        bottom = [0]  # The index of the first item in the interval in the sequence of items
 
         def get_preceding_intervals(right):
             # Get all intervals that precede a given point "right"
             while left[0] < right:
 
-                # Case where the left-most minimizer ends before the start of the new minimizer
-                if start_fn(stack[0]) + length <= right:
-                    yield left[0], start_fn(stack[0]) + length, bottom[0], bottom[0] + len(stack)
+                # Case where the left-most item ends before the start of the new item
+                if start_fn(stack[0]) + length_fn(stack[0]) <= right:
+                    yield left[0], start_fn(stack[0]) + length_fn(stack[0]), bottom[0], bottom[0] + len(stack)
 
-                    # If the stack contains only one minimizer there is a gap between the minimizer
-                    # and the new minimizer, otherwise just shift to the end of the leftmost minimizer
-                    left[0] = right if len(stack) == 1 else start_fn(stack[0]) + length
+                    # If the stack contains only one item there is a gap between the item
+                    # and the new item, otherwise just shift to the end of the leftmost item
+                    left[0] = right if len(stack) == 1 else start_fn(stack[0]) + length_fn(stack[0])
 
                     bottom[0] += 1
                     del (stack[0])
 
-                # Case where the left-most minimizer ends at or after the beginning of the new new minimizer
+                # Case where the left-most item ends at or after the beginning of the new new item
                 else:
                     yield left[0], right, bottom[0], bottom[0] + len(stack)
                     left[0] = right
-
-        # For each minimizer in turn
-        for minimizer in minimizers[1:]:
+                    
+        # For each item in turn
+        for item in items[1:]:
             assert len(stack) > 0
 
-            # For each new minimizer we return all intervals that
-            # precede start_fn(minimizer)
-            for interval in get_preceding_intervals(start_fn(minimizer)):
+            # For each new item we return all intervals that
+            # precede start_fn(item)
+            for interval in get_preceding_intervals(start_fn(item)):
                 yield interval
 
-            stack.append(minimizer)  # Add the new minimizer for the next loop
+            stack.append(item)  # Add the new item for the next loop
 
         # Intervals of the remaining intervals on the stack
         for interval in get_preceding_intervals(len(self.read)):
@@ -291,6 +381,7 @@ class Read:
                     # This is try/except loop is here because some minimizers contain overlapping windows and we ignore
                     # those minimizers right now
                     reads.append(Read(line, correct))
+                    print(reads[-1])
                 except AssertionError:
                     pass
                 if max_reads != -1 and len(reads) > max_reads:
