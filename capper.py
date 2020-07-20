@@ -1,7 +1,7 @@
 from ctypes import c_uint64
 import math
-import matplotlib
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import heapq
@@ -12,9 +12,12 @@ import time
 logger = logging.getLogger(__name__)
 
 RC_TABLE = str.maketrans("ACGT", "TGCA")
+
+
 def reverse_complement(dna):
     return ''.join(reversed(dna.translate(RC_TABLE)))
-    
+
+
 # negative infinity
 n_inf = float("-inf")
 
@@ -22,17 +25,19 @@ n_inf = float("-inf")
 def log_add(i, j):
     def log_add_one(x):
         return math.log10(math.pow(10, x) + 1)
+
     if i < j:
         return log_add_one(j - i) + i if j - i <= 10 else j
     return log_add_one(i - j) + j if i - j <= 10 else i
-    
+
 
 def prob_to_log10prob(prob):
     """
     Convert a raw probability to a log10 probability.
     """
-    
+
     return math.log10(prob)
+
 
 def log10prob_to_phred(log10prob):
     """
@@ -40,24 +45,27 @@ def log10prob_to_phred(log10prob):
     
     :return: the Phred score as a float
     """
-    
+
     return -10 * log10prob
-    
+
+
 def log10prob_for_at_least_one(prob_each, count):
     """
     Return the log10 probability for at least one event happening, out of count
     chances each with independent raw probability log10_prob_each.
     """
-    
+
     return log10prob_not(prob_to_log10prob(1.0 - prob_each) * count)
-    
+
+
 def log10prob_not(log10prob):
     """
     Return the log10 probability for the opposite of an event with the given log10 probability.
     """
-    
+
     return math.log10(1.0 - math.pow(10, log10prob))
-    
+
+
 class Minimizer:
     """
     Represents a minimizer within a read.
@@ -68,14 +76,23 @@ class Minimizer:
     def __init__(self, minimizer, minimizer_start, window_start, window_length, hits, hits_in_extension, source_read):
         self.minimizer, self.minimizer_start, self.window_start = minimizer, minimizer_start, window_start
         self.window_length, self.hits, self.hits_in_extension = window_length, hits, hits_in_extension
-        
+
         if self.minimizer != source_read[minimizer_start:minimizer_start + len(self.minimizer)]:
             # It's a reverse strand minimizer
             self.is_reverse = True
-            assert reverse_complement(self.minimizer) == source_read[minimizer_start:minimizer_start + len(self.minimizer)]
+            assert reverse_complement(self.minimizer) == source_read[
+                                                         minimizer_start:minimizer_start + len(self.minimizer)]
         else:
             self.is_reverse = False
-        
+
+        # Work out how easy this minimizer is to beat.
+        # At hash = 2^64 - 1, you are almost certain to beat it, unless you actually hit it,
+        # in which case you won't beat it.
+        # At hash = 0 you cannot beat it.
+        # At hash = 1 only 1 of the 2^64 possibilities beats it.
+        self.beat_prob = self.hash() / (2 ** 64)  # A float on 0-1 that represents the probability of beating this
+        # minimizer's hash with a random other minimizer.
+
         # Consistency checks
         assert len(source_read) >= 0
         assert minimizer_start >= 0 and minimizer_start + len(minimizer) <= len(source_read)
@@ -87,8 +104,8 @@ class Minimizer:
         return "window_start: {} window_length: {} minimizer_start: {} " \
                "minimizer_length: {} minimizer: {} hits: {} hits_in_extension: {} hash: {:016x} beat_prob: {}". \
             format(self.window_start, self.window_length - Minimizer.total_window_length + 1, self.minimizer_start,
-                   len(self.minimizer), self.minimizer, self.hits, self.hits_in_extension, self.hash(), self.beat_prob())
-                   
+                   len(self.minimizer), self.minimizer, self.hits, self.hits_in_extension, self.hash(), self.beat_prob)
+
     def encode(self):
         """
         Encode the minimizer as an integer.
@@ -96,7 +113,7 @@ class Minimizer:
         :return: the minimizer 2-bit encoded as A=0, C=1, G=2, T=3, last base
         in least significant position.
         """
-        
+
         encoding = {'A': 0, 'C': 1, 'G': 2, 'T': 3}
         encoded = 0
         for base in self.minimizer:
@@ -105,7 +122,7 @@ class Minimizer:
             # Encode and shift in each base.
             encoded = (encoded << 2 | encoding[base])
         return encoded
-            
+
     def hash(self):
         """
         Get the integer hash value of the current minimizer.
@@ -113,39 +130,27 @@ class Minimizer:
         
         :return: the minimizer's hash value as a nonnegative int in 64 bits
         """
-        
+
         # Numpy 64 bit ints warn on overflow and ctypes 64 bit ints don't implement inportant ops like xor.
         # So we use Python bigints and mask frequently.
         mask = 0xFFFFFFFFFFFFFFFF
-        
+
         scratch = self.encode() & mask
-        
+
         # Implement Thomas Wang's 64 bit integer hash function as in gbwt library
         scratch = ((scratch ^ mask) + ((scratch << 21) & mask)) & mask
         scratch = scratch ^ (scratch >> 24)
-        scratch = (((scratch + ((scratch << 3)) & mask) & mask) + ((scratch << 8) & mask)) & mask
+        scratch = (((scratch + (scratch << 3) & mask) & mask) + ((scratch << 8) & mask)) & mask
         scratch = (scratch ^ (scratch >> 14)) & mask
         scratch = (((scratch + ((scratch << 2) & mask)) & mask) + ((scratch << 4) & mask)) & mask
         scratch = (scratch ^ (scratch >> 28)) & mask
         scratch = (scratch + ((scratch << 31) & mask)) & mask
         return scratch
-        
-    def beat_prob(self):
-        """
-        Work out how easy this minimizer is to beat.
-        
-        :return: a float on 0-1 that represents the probability of beating this
-        minimizer's hash with a random other minimizer.
-        """
-        
-        # At hash = 2^64 - 1, you are almost certain to beat it, unless you actually hit it, in which case you won't beat it.
-        # At hash = 0 you cannot beat it.
-        # At hash = 1 only 1 of the 2^64 possibilities beats it.
-        return self.hash()/(2**64)
-        
-        
+
+
 class UnacceptableReadError(RuntimeError):
     pass
+
 
 class Read:
     """
@@ -153,8 +158,12 @@ class Read:
     """
 
     def __init__(self, line, correct):
-        # Format is tab sep:
-        # READ_STR QUAL_STR IGNORED (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN MAP_Q CAP CAP STAGE
+
+        # Format is tab sep (on one line):
+        # READ_STR QUAL_STR IGNORED
+        # (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN
+        # MAP_Q CAP CAP STAGE
+
         tokens = line.split()
         self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
         assert len(self.read) == len(self.qual_string)
@@ -166,6 +175,7 @@ class Read:
                                             int(tokens[i + 7]), int(tokens[i + 8]), self.read) for i in
                                   range(0, len(tokens) - 7, 6)],
                                  key=lambda x: x.window_start)  # Sort by start coordinate
+
         # Check they don't overlap and every window is accounted for
         # TODO: This isn't always true
         p_window = 0
@@ -177,39 +187,43 @@ class Read:
         if p_window + Minimizer.total_window_length != len(self.read) + 1:
             # Read contains duplicate minimizers and can't be handled
             raise UnacceptableReadError()
-            
+
     def __str__(self):
-        return "Read map_q:{} adam_cap:{} xian_cap:{} fast_cap:{} \n read_string: {}\n qual_string: {}\n ".format(
-            self.map_q, self.adam_cap, self.xian_cap, self.fast_cap(), self.read,
-            " ".join(map(str, self.qual_string))) + "\n\t".join(map(str, self.minimizers)) + "\n"
-            
+        return "Read map_q:{} adam_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.map_q, self.adam_cap, self.xian_cap,
+                                                                    self.faster_cap(), self.faster_unique_cap(),
+                                                                    self.faster_balanced_cap(), self.stage,
+                                                                    self.read, " ".join(map(str, self.qual_string)),
+                                                                    "\n\t".join(map(str, self.minimizers)))
+
     def visualize(self, out=sys.stdout):
         """
         Print out the read sequence with the minimizers aligned below it.
         """
-        
+
         # First all the position numbers
-        
+
         # Work out how namy digits we need for position
         digits = int(math.ceil(math.log10(len(self.read))))
         # Pad each number to that width
         texts = [('{:>' + str(digits) + '}').format(i) for i in range(len(self.read))]
-        
+
         for row in range(digits):
             # For each digit we need
             for text in texts:
-               # Print that digit of each padded number
-               out.write(text[row])
+                # Print that digit of each padded number
+                out.write(text[row])
             out.write('\n')
-            
+
         # Then the sequence
         out.write(self.read)
         out.write('\n')
-        
+
         # Then the minimizers
         for minimizer in self.minimizers:
             # Work out what orientation to print
-            minimizer_text = minimizer.minimizer if not minimizer.is_reverse else reverse_complement(minimizer.minimizer)
+            minimizer_text = minimizer.minimizer if not minimizer.is_reverse else reverse_complement(
+                minimizer.minimizer)
             for i in range(len(self.read)):
                 if i < minimizer.window_start:
                     # Before agglomeration
@@ -227,7 +241,7 @@ class Read:
                     # After minimizer
                     out.write(' ')
             out.write('\n')
-            
+
     def recompute_adam_cap(self):
         """
         Recompute the "Adam Cap": probability of the most probable way to have
@@ -238,124 +252,130 @@ class Read:
         
         :return: Phred scaled log prob of read being wrongly aligned
         """
-        
+
         # Filter down to just located minimizers
         minimizers = [m for m in self.minimizers if m.hits_in_extension > 0]
         next_minimizer = 0
-        
+
         if len(minimizers) == 0:
             # No minimizers left = can't cap
             # Should probably actually treat as 0.
             return float('inf')
-        
+
         # Make a DP table of Phred score for cheapest solution up to here, with an error at this base
         table = np.full(len(self.read), n_inf)
-        
+
         # Have a priority queue of agglomerations, with earliest-ending and then latest-starting being at the front
         # Agglomerations are (end, -start, minimizer)
         active_agglomerations = []
-        
+
         # Have another priority queue of windows, with earliest-ending and then latest-starting being at the front
         # Windows are (end, -start)
         # These aren't all overlapped, but none have ended yet.
         active_windows = []
-        
+
         # Track the latest-starting window ending before here, as (start, end), if any
         prev_window = None
-        
+
         for i in range(len(self.read)):
             # Go through all the bases in the read.
-            
+
             logger.debug("At base %d", i)
-            
+
             while next_minimizer < len(minimizers) and minimizers[next_minimizer].window_start == i:
-                
+
                 # While the next agglomeration starts here
                 agg = minimizers[next_minimizer]
                 # Put it in the queue
                 heapq.heappush(active_agglomerations, (agg.window_start + agg.window_length, -agg.window_start, agg))
-                
+
                 logger.debug("Agglomeration starts here: %s", agg)
-                
+
                 for window_offset in range(agg.window_length - agg.total_window_length + 1):
                     # And also all its windows
                     # Represent them as end, start for sort order
-                    heapq.heappush(active_windows, (agg.window_start + window_offset + agg.total_window_length, -(agg.window_start + window_offset)))
-                    
-                    logger.debug("Creates window %d to %d", agg.window_start + window_offset, agg.window_start + window_offset + agg.total_window_length)
-                    
+                    heapq.heappush(active_windows, (
+                        agg.window_start + window_offset + agg.total_window_length,
+                        -(agg.window_start + window_offset)))
+
+                    logger.debug("Creates window %d to %d", agg.window_start + window_offset,
+                                 agg.window_start + window_offset + agg.total_window_length)
+
                 # Move on to the next minimizer
                 next_minimizer += 1
-                   
+
             if len(active_agglomerations) == 0:
                 # Nothing to do here
                 logger.debug("Ignore base: no agglomerations")
             else:
-                   
+
                 # Phred cost of an error here
                 base_cost = self.qual_string[i]
-                
+
                 logger.debug("Cost to break base: %f", base_cost)
                 for _, _, active_agg in active_agglomerations:
                     # For each minimizer this base is in an agglomeration of (i.e. that
                     # is active)
-                    
+
                     logger.debug("Overlap agglomeration: %s", active_agg)
-                    
+
                     # Work out the Phred cost of breaking the minimizer for
                     # the windows of it that we overlap by having an error here
-                    
-                    if i >= active_agg.minimizer_start and i < active_agg.minimizer_start + len(active_agg.minimizer):
+
+                    if active_agg.minimizer_start <= i < active_agg.minimizer_start + len(active_agg.minimizer):
                         # We are in the minimizer itself.
                         # No cost to break
                         minimizer_break_score = 0
                         logger.debug("In minimizer: no additional cost")
                     else:
                         # We are in the flank.
-                        
-                        # How many new possible minimizers would an error here create in this agglomeration, to compete with its minimizer?
+
+                        # How many new possible minimizers would an error here create in this agglomeration,
+                        # to compete with its minimizer?
                         # No more than one per position in a minimizer sequence.
                         # No more than 1 per base from the start of the agglomeration to here, inclusive.
                         # No more than 1 per base from here to the last base of the agglomeration, inclusive.
                         possible_minimizers = min(len(active_agg.minimizer),
-                                                  min(i - active_agg.window_start + 1, 
-                                                     (active_agg.window_start + active_agg.window_length) - i))
-                                                     
+                                                  min(i - active_agg.window_start + 1,
+                                                      (active_agg.window_start + active_agg.window_length) - i))
+
                         # How probable is it to beat the current minimizer?
-                        beat_prob = active_agg.beat_prob()
+                        beat_prob = active_agg.beat_prob
 
                         # We have that many chances to beat this minimizer. What's that in Phred?
-                        minimizer_break_score = log10prob_to_phred(log10prob_for_at_least_one(beat_prob, possible_minimizers))
-                        
-                        logger.debug("Out of minimizer: need to beat with probability %f and %d chances for %f points", beat_prob, possible_minimizers, minimizer_break_score)
-                    
+                        minimizer_break_score = log10prob_to_phred(
+                            log10prob_for_at_least_one(beat_prob, possible_minimizers))
+
+                        logger.debug("Out of minimizer: need to beat with probability %f and %d chances for %f points",
+                                     beat_prob, possible_minimizers, minimizer_break_score)
+
                     # And AND them all up
                     base_cost += minimizer_break_score
-                
+
                 if prev_window is not None:
                     # AND that with the cheapest thing in the latest-starting window ending before here
                     prev_cost = np.min(table[prev_window[0]:prev_window[1]])
                     logger.debug("Cheapest previous base in %d to %d is %f", prev_window[0], prev_window[1], prev_cost)
                     base_cost += prev_cost
-                    
+
                 logger.debug("Total cost for best solution ending in this base: %f", base_cost)
-                    
+
                 # Save into the DP table
                 table[i] = base_cost
-            
+
             # Kick out agglomerations and windows we have passed
-            
+
             while len(active_agglomerations) > 0 and active_agglomerations[0][0] == i + 1:
                 # We are the last base in this agglomeration.
                 # Pop it. It won't be active anymore.
                 logger.debug("End agglomeration: %s", active_agglomerations[0][2])
                 heapq.heappop(active_agglomerations)
-            
+
             while len(active_windows) > 0 and active_windows[0][0] == i + 1:
                 # We are the last base in this window
-                
+
                 logger.debug("End window %s to %s", -active_windows[0][1], active_windows[0][0])
-                
+
                 if prev_window is None or prev_window[0] < -active_windows[0][1]:
                     # We have no latest-starting window ending before here, or this one starts later.
                     # Take it (making sure to decode its weird encoding)
@@ -363,33 +383,17 @@ class Read:
                     logger.debug("It is new latest-starting window ending before here")
                 # Pop it
                 heapq.heappop(active_windows)
-            
+
         # Now the DP table is filled
-            
+
         # Scan the latest-ending, latest-starting window to find the total cost.
         assert prev_window is not None
         winner = np.min(table[prev_window[0]:prev_window[1]])
         logger.debug("Cheapest answer in final window %d to %d is %f", prev_window[0], prev_window[1], winner)
         return winner
 
-    def minimizer_interval_iterator(self, minimizers, start_fn=lambda x: x.minimizer_start, length=29):
-        """
-        Iterator over common intervals of overlapping minimizers.
-        
-        :param minimizers: the list of minimizers to iterate over
-        :param start_fn: returns the start of the minimizer in the minimizer
-        :param length: the length of the minimizer
-        
-        :return: yields sequence of (left, right, bottom, top) tuples, where left if the first base
-        of the minimizer interval (inclusive), right is the last base of the minimizer interval (exclusive),
-        bottom is the index of the first minimizer in the interval and top is the index of the last minimizer
-        in the interval (exclusive).
-        """
-        
-        return self.overlap_interval_iterator(minimizers, start_fn, lambda x: length)
-        
-            
-    def agglomeration_interval_iterator(self, minimizers, start_fn=lambda x: x.window_start, length_fn=lambda x: x.window_length):
+    def agglomeration_interval_iterator(self, minimizers, start_fn=lambda x: x.window_start,
+                                        length_fn=lambda x: x.window_length):
         """
         Iterator over common intervals of overlapping minimizer agglomerations.
         
@@ -404,7 +408,7 @@ class Read:
         and top is the index of the last minimizer with an agglomeration in the
         interval (exclusive).
         """
-        
+
         return self.overlap_interval_iterator(minimizers, start_fn, length_fn)
 
     def overlap_interval_iterator(self, items, start_fn, length_fn):
@@ -451,7 +455,7 @@ class Read:
                 else:
                     yield left[0], right, bottom[0], bottom[0] + len(stack)
                     left[0] = right
-                    
+
         # For each item in turn
         for item in items[1:]:
             assert len(stack) > 0
@@ -467,42 +471,64 @@ class Read:
         for interval in get_preceding_intervals(len(self.read)):
             yield interval
 
-    def get_log_prob_of_base_error_in_interval(self, left, right, sum_fn=log_add):
+    def get_log_prob_of_disruption_in_column(self, minimizers, index):
+        """ Gives the log10 prob of a base error in the given column of the read that disrupts all the
+        overlapping minimizers.
+        :param minimizers: Minimizers to be disrupted
+        :param index: Index of position in read
+        :return: log10 prob of disruption as float
         """
-        Gives the log10 prob of a base error in the given interval of the read
+        p = -(self.qual_string[index]) / 10
+        for m in minimizers:
+            if not (m.minimizer_start <= index < m.minimizer_start + len(m.minimizer)):
+                # Index is out of range of the minimizer
+
+                # How many new possible minimizers would an error here create in this agglomeration,
+                # to compete with its minimizer?
+                # No more than one per position in a minimizer sequence.
+                # No more than 1 per base from the start of the agglomeration to here, inclusive.
+                # No more than 1 per base from here to the last base of the agglomeration, inclusive.
+                possible_minimizers = min(len(m.minimizer),
+                                          min(index - m.window_start + 1,
+                                              (m.window_start + m.window_length) - index))
+
+                # We have that many chances to beat this minimizer.
+                p += log10prob_for_at_least_one(m.beat_prob, possible_minimizers)
+        return p
+
+    def get_log_prob_of_disruption_in_interval(self, minimizers, left, right, sum_fn=log_add):
+        """
+        Gives the log10 prob of a base error in the given interval of the read,
+        accounting for the disruption of minimizers
+        :param minimizers: Minimizers to be disrupted
         :param left: Leftmost base in interval of read, inclusive
         :param right: Rightmost base in interval of read, exclusive
         :param sum_fn: Function for adding/maxing log probs in interval
         :return: log10 prob as float
         """
         assert left < right  # We don't allow zero length intervals
-        p = -(self.qual_string[left]) / 10
+        p = self.get_log_prob_of_disruption_in_column(minimizers, left)
         for i in range(left + 1, right):
-            p = sum_fn(-(self.qual_string[i]) / 10, p)
+            p = sum_fn(self.get_log_prob_of_disruption_in_column(minimizers, i), p)
         return p
 
-    @staticmethod
-    def get_log_prob_of_minimizer_skip(minimizer):
-        """ Get probability of the minimizer not being part of a considered extension.
-        :param minimizer:
-        :return: log10 prob as float
+    def faster_balanced_cap(self, sum_fn=log_add):
+        """ As faster_cap(), but scores minimizers
+        :param sum_fn: Function for adding/maxing log probs in interval
+        :return: Phred scaled log prob of read being wrongly aligned
         """
-        assert minimizer.hits_in_extension <= minimizer.hits
-        if minimizer.hits == 0:  # Case there are no hits in graph so must skip
-            return 0.0
-        if minimizer.hits_in_extension == 0:  # Case no hits are in extensions so must skip
-            return 0.0
-        if minimizer.hits > 1: # TODO: why does skipping any non-unique minimizers improve things?
-            return 0.0
-        return n_inf
+        x = self.faster_unique_cap(sum_fn=sum_fn)
+        y = self.faster_cap(sum_fn=sum_fn)
+        return min(x + 30, y)
 
-        # if minimizer.hits == minimizer.hits_in_extension:  # Case all hits in extensions so can't skip
-        #    return n_inf
-        # return math.log10(1.0 - minimizer.hits_in_extension/minimizer.hits)
+    def faster_unique_cap(self, sum_fn=log_add):
+        """ As faster_cap(), but only consider unique minimizers in the read.
+        :param sum_fn: Function for adding/maxing log probs in interval
+        :return: Phred scaled log prob of read being wrongly aligned
+        """
+        return self.faster_cap(sum_fn=sum_fn, minimizer_filter_fn=lambda x: x.hits_in_extension > 0 and x.hits == x.hits_in_extension)
 
-    def fast_cap(self, start_fn=lambda x: x.minimizer_start, minimizer_length=29,
-                 sum_fn=log_add, minimizer_filter_fn=lambda x: (x.hits == 1 and x.hits_in_extension == 1),
-                 include_skip_prob=True):
+    def faster_cap(self, sum_fn=log_add, minimizer_filter_fn=lambda x: x.hits_in_extension > 0):
         """ Compute cap on the reads qual score by considering possibility that base errors and unlocated
         minimizer hits prevented us finding the true alignment.
 
@@ -522,13 +548,9 @@ class Read:
         we consider base errors that would result in the minimizers in the interval being incorrect
 
         We use dynamic programming sweeping left-to-right over the intervals to compute the probability of
-        the minimum number of base errors needed to disrupt all the minimizers, or for the minimizers to have not been
-        located within extensions.
+        the minimum number of base errors needed to disrupt all the minimizers.
 
-        :param start_fn: Function that returns start of the minimizer
-        :param minimizer_length: Length of the minimizer
         :param sum_fn: method for adding up probability of one or more base errors in an interval of bases
-        :param include_skip_prob: Include probability of skipping a minimizer
         :param minimizer_filter_fn: Function to filter which minimizers are considered
         :return: Phred scaled log prob of read being wrongly aligned
         """
@@ -540,29 +562,17 @@ class Read:
         # such that c[i+1] is log prob of mutating minimizers 0, 1, 2, ..., i
         c[0] = 0.0
 
-        p_bottom = 0
-        for left, right, bottom, top in self.minimizer_interval_iterator(filtered_minimizers, start_fn=start_fn,
-                                                                         length=minimizer_length):
-            # If a new minimizer in the interval include probability of skipping the minimizer
-            if include_skip_prob and p_bottom == bottom:
-                p = c[bottom] + self.get_log_prob_of_minimizer_skip(filtered_minimizers[bottom])
-                if c[bottom + 1] < p:
-                    c[bottom + 1] = p
-                p_bottom += 1
-
+        for left, right, bottom, top in self.agglomeration_interval_iterator(filtered_minimizers):
             # Calculate prob of all intervals up to top being disrupted
-            p = c[bottom] + self.get_log_prob_of_base_error_in_interval(left, right, sum_fn=sum_fn)
+            p = c[bottom] + self.get_log_prob_of_disruption_in_interval(filtered_minimizers[bottom:top], left, right,
+                                                                        sum_fn=sum_fn)
 
             # Replace min-prob for minimizers in the interval
             for i in range(bottom + 1, top + 1):
                 if c[i] < p:
                     c[i] = p
 
-        # Checks
-        if include_skip_prob:
-            assert p_bottom == len(filtered_minimizers)
         assert c[-1] != n_inf
-
         return -c[-1] * 10
 
     @staticmethod
@@ -610,8 +620,8 @@ class Reads:
                 reads_seen += 1
                 reads_correct += 1 if read.correct else 0
             roc_bins.append((
-                            math.log10((reads_seen - reads_correct) / reads_seen) if reads_seen > reads_correct else -8,
-                            reads_correct / len(self.reads), len(bins[map_q]), map_q))
+                math.log10((reads_seen - reads_correct) / reads_seen) if reads_seen > reads_correct else -8,
+                reads_correct / len(self.reads), len(bins[map_q]), map_q))
         return roc_bins
 
     @staticmethod
@@ -619,7 +629,8 @@ class Reads:
         colors = ["r--", "bs", 'g^']  # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x: x[0], roc)), list(map(lambda x: x[1], roc)), color)
-        plt.savefig('roc.svg')
+        # plt.savefig('roc.svg')
+        plt.show()
 
 
 def main():
@@ -631,18 +642,21 @@ def main():
 
     # Print some of the funky reads
     for i, read in enumerate(reads.reads):
-        if not read.correct and read.map_q >= 60 and read.fast_cap() >= 60:
-            print("Read {}".format(i), read)
+        if not read.correct and min(2.0 * read.faster_cap(), read.map_q) >= 60:
+            print("Read {} {}".format(i, read))
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
     print("Roc unmodified", roc_unmodified)
     roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.adam_cap, r.map_q, 60)))
     print("Roc adam modified ", roc_adam_modified)
-    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.fast_cap() + 10, r.map_q, 60)))
+    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(min(2.0 * r.faster_cap(), r.map_q, 60)))
     print("Roc mode modified ", roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
+    #plt.scatter([x.adam_cap for x in reads.reads if not x.correct], [x.faster_balanced_cap() for x in reads.reads if not x.correct])
+    #plt.scatter([x.adam_cap for x in reads.reads if x.correct], [x.faster_cap() for x in reads.reads if x.correct], 'g^')
+    #plt.show()
 
 if __name__ == '__main__':
     main()

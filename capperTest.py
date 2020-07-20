@@ -4,14 +4,15 @@ import unittest
 from capper import Read
 
 class CapperTest(unittest.TestCase):
-    def test_minimizer_interval_iterator(self):
+    def test_overlap_interval_iterator(self):
         reads = Read.parse_reads("minimizers_incorrect_1kg") #, maxReads=1000)
 
         for read in reads:
             #print(read)
             i, j, k = 0, -1, 0
 
-            for left, right, bottom, top in read.minimizer_interval_iterator(read.minimizers, start_fn=lambda x: x.minimizer_start, length=29):
+            for left, right, bottom, top in read.overlap_interval_iterator(read.minimizers,
+                                            start_fn=lambda x: x.minimizer_start, length_fn=lambda x : 29):
                 #print(" Left {}, Right {}, Bottom {}, Top {}".format(left, right, bottom, top))
                 assert left < right
                 assert i <= left
@@ -281,11 +282,6 @@ class CapperTest(unittest.TestCase):
         right_answer = 58.0915
         
         assert recomputed_cap == right_answer, "Cap is {} when it should be {}".format(recomputed_cap, right_answer)
-        
-        
-        
-    
-    
     
 if __name__ == '__main__':
     logging.basicConfig(level=logging.INFO)
