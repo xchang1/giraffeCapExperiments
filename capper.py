@@ -1,4 +1,3 @@
-from ctypes import c_uint64
 import math
 # import matplotlib
 # matplotlib.use('Agg')
@@ -176,17 +175,26 @@ class Read:
                                   range(0, len(tokens) - 7, 6)],
                                  key=lambda x: x.window_start)  # Sort by start coordinate
 
+        self.minimizers = sorted(self.minimizers, key=lambda x: x.minimizer_start)  # Fix broken minimizer ordering
+
         # Check they don't overlap and every window is accounted for
-        # TODO: This isn't always true
-        p_window = 0
+        p_window_start = -1
+        p_window_end = -1
         for minimizer in self.minimizers:
-            if p_window != minimizer.window_start:
-                # Read contains duplicate minimizers and can't be handled
-                raise UnacceptableReadError()
-            p_window += minimizer.window_length - Minimizer.total_window_length + 1
-        if p_window + Minimizer.total_window_length != len(self.read) + 1:
-            # Read contains duplicate minimizers and can't be handled
-            raise UnacceptableReadError()
+            if p_window_start > minimizer.window_start:
+                # Read contains minimizers that are out of order or overlap on start coordinates
+                raise UnacceptableReadError(str(self))
+            p_window_start = minimizer.window_start
+
+            if p_window_end > minimizer.window_start + minimizer.window_length:
+                # Read contains minimizers that are out of order or overlap on end coordinates
+                raise UnacceptableReadError(str(self))
+
+            p_window_end = minimizer.window_start + minimizer.window_length
+
+            if minimizer.window_start + minimizer.window_length > len(self.read):
+                # Read contains minimizer that extends beyond the read length
+                raise UnacceptableReadError(str(self))
 
     def __str__(self):
         return "Read map_q:{} adam_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
@@ -526,7 +534,7 @@ class Read:
         :param sum_fn: Function for adding/maxing log probs in interval
         :return: Phred scaled log prob of read being wrongly aligned
         """
-        return self.faster_cap(sum_fn=sum_fn, minimizer_filter_fn=lambda x: x.hits_in_extension > 0 and x.hits == x.hits_in_extension)
+        return self.faster_cap(sum_fn=sum_fn, minimizer_filter_fn=lambda x: 0 < x.hits_in_extension == x.hits)
 
     def faster_cap(self, sum_fn=log_add, minimizer_filter_fn=lambda x: x.hits_in_extension > 0):
         """ Compute cap on the reads qual score by considering possibility that base errors and unlocated
@@ -580,13 +588,7 @@ class Read:
         reads = []
         with open(reads_file) as fh:  # This masks a bug
             for line in fh:
-                try:
-                    # This is try/except loop is here because some minimizers contain overlapping windows and we ignore
-                    # those minimizers right now
-                    reads.append(Read(line, correct))
-                except UnacceptableReadError:
-                    # Skip reads we can't deal with
-                    pass
+                reads.append(Read(line, correct))
                 if max_reads != -1 and len(reads) > max_reads:
                     break
         return reads
@@ -642,7 +644,7 @@ def main():
 
     # Print some of the funky reads
     for i, read in enumerate(reads.reads):
-        if not read.correct and min(2.0 * read.faster_cap(), read.map_q) >= 60:
+        if not read.correct and round(0.85 * min(2.0 * read.faster_cap(), read.map_q)) >= 60:
             print("Read {} {}".format(i, read))
 
     # Make ROC curves
@@ -650,13 +652,16 @@ def main():
     print("Roc unmodified", roc_unmodified)
     roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.adam_cap, r.map_q, 60)))
     print("Roc adam modified ", roc_adam_modified)
-    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(min(2.0 * r.faster_cap(), r.map_q, 60)))
+    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70)))
     print("Roc mode modified ", roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
-    #plt.scatter([x.adam_cap for x in reads.reads if not x.correct], [x.faster_balanced_cap() for x in reads.reads if not x.correct])
-    #plt.scatter([x.adam_cap for x in reads.reads if x.correct], [x.faster_cap() for x in reads.reads if x.correct], 'g^')
-    #plt.show()
+    # plt.scatter([x.adam_cap for x in reads.reads if not x.correct],
+    # [x.faster_balanced_cap() for x in reads.reads if not x.correct])
+    # plt.scatter([x.adam_cap for x in reads.reads if x.correct],
+    # [x.faster_cap() for x in reads.reads if x.correct], 'g^')
+    # plt.show()
+
 
 if __name__ == '__main__':
     main()

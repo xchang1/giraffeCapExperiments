@@ -5,7 +5,7 @@ from capper import Read
 
 class CapperTest(unittest.TestCase):
     def test_overlap_interval_iterator(self):
-        reads = Read.parse_reads("minimizers_incorrect_1kg") #, maxReads=1000)
+        reads = Read.parse_reads("new/minimizers_incorrect_1kg") #, maxReads=1000)
 
         for read in reads:
             #print(read)
