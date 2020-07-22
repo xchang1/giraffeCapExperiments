@@ -590,8 +590,6 @@ class Read:
         # get_log_prob_of_minimizer_skip function above
         filtered_minimizers = list(filter(minimizer_filter_fn, self.minimizers))
         
-        self.visualize(minimizers=filtered_minimizers)
-
         c = np.full(len(filtered_minimizers) + 1, n_inf)  # Log10 prob of having mutated minimizers,
         # such that c[i+1] is log prob of mutating minimizers 0, 1, 2, ..., i
         c[0] = 0.0
@@ -617,7 +615,6 @@ class Read:
         with open(reads_file) as fh:  # This masks a bug
             for line in fh:
                 reads.append(Read(line, correct))
-                print(reads[-1])
                 if max_reads != -1 and len(reads) > max_reads:
                     break
         return reads
@@ -665,7 +662,7 @@ class Reads:
 
 
 def main():
-    logging.basicConfig(level=logging.DEBUG)
+    logging.basicConfig(level=logging.INFO)
     start_time = time.time()
 
     # Parse the reads
