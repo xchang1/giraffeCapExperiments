@@ -689,6 +689,7 @@ def main():
     # [x.faster_cap() for x in reads.reads if x.correct], 'g^')
     # plt.show()
     
+    plt.clf()
     plt.scatter([x.vg_computed_cap for x in reads.reads], [x.faster_cap() for x in reads.reads])
     plt.savefig('compare.png')
 
