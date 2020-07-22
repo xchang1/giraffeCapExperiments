@@ -176,7 +176,7 @@ class Read:
             # No stage
             self.uncapped_map_q, self.vg_computed_cap, self.xian_cap = \
                 float(tokens[-3]), float(tokens[-2]), float(tokens[-1])
-             self.stage = "unknown"
+            self.stage = "unknown"
         self.correct = correct
         self.minimizers = sorted([Minimizer(tokens[i + 3], int(tokens[i + 4]), int(tokens[i + 5]), int(tokens[i + 6]),
                                             int(tokens[i + 7]), int(tokens[i + 8]), self.read) for i in
