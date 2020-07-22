@@ -161,14 +161,22 @@ class Read:
         # Format is tab sep (on one line):
         # READ_STR QUAL_STR IGNORED
         # (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN
-        # MAP_Q CAP CAP STAGE
+        # UNCAPPED_MAP_Q CAP CAP STAGE
 
         tokens = line.split()
         self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
         assert len(self.read) == len(self.qual_string)
         # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
-        self.map_q, self.vg_computed_cap, self.xian_cap, self.stage = \
-            float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+        # Note that last correct stage may not be there
+        if len(tokens) % 6 == 1:
+            # Stage should be there
+            self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.stage = \
+                float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+        else:
+            # No stage
+            self.uncapped_map_q, self.vg_computed_cap, self.xian_cap = \
+                float(tokens[-3]), float(tokens[-2]), float(tokens[-1])
+             self.stage = "unknown"
         self.correct = correct
         self.minimizers = sorted([Minimizer(tokens[i + 3], int(tokens[i + 4]), int(tokens[i + 5]), int(tokens[i + 6]),
                                             int(tokens[i + 7]), int(tokens[i + 8]), self.read) for i in
@@ -197,17 +205,21 @@ class Read:
                 raise UnacceptableReadError(str(self))
 
     def __str__(self):
-        return "Read map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
-            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.map_q, self.vg_computed_cap, self.xian_cap,
+        return "Read uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.uncapped_map_q, self.vg_computed_cap, self.xian_cap,
                                                                     self.faster_cap(), self.faster_unique_cap(),
                                                                     self.faster_balanced_cap(), self.stage,
                                                                     self.read, " ".join(map(str, self.qual_string)),
                                                                     "\n\t".join(map(str, self.minimizers)))
 
-    def visualize(self, out=sys.stdout):
+    def visualize(self, out=sys.stdout, minimizers=None):
         """
         Print out the read sequence with the minimizers aligned below it.
         """
+
+        # Work out the set of minimizers we want
+        if minimizers is None:
+            minimizers = self.minimizers
 
         # First all the position numbers
 
@@ -228,7 +240,7 @@ class Read:
         out.write('\n')
 
         # Then the minimizers
-        for minimizer in self.minimizers:
+        for minimizer in minimizers:
             # Work out what orientation to print
             minimizer_text = minimizer.minimizer if not minimizer.is_reverse else reverse_complement(
                 minimizer.minimizer)
@@ -502,6 +514,7 @@ class Read:
 
                 # We have that many chances to beat this minimizer.
                 p += log10prob_for_at_least_one(m.beat_prob, possible_minimizers)
+        logger.debug("Overall log10 prob for disrupting all minimizers via column %d: %f", index, p)
         return p
 
     def get_log_prob_of_disruption_in_interval(self, minimizers, left, right, sum_fn=log_add):
@@ -520,6 +533,15 @@ class Read:
         p = self.get_log_prob_of_disruption_in_column(minimizers, left)
         for i in range(left + 1, right):
             p = sum_fn(self.get_log_prob_of_disruption_in_column(minimizers, i), p)
+            
+        # With really bad base qualities our assumption that OR ~= total of
+        # probabilities which we might make will break down because the errors
+        # aren't actually exclusive.
+        
+        # Cap at 0 (certainty)
+        p = min(p, 0.0)
+        
+        logger.debug("Overall log10 prob for disrupting %d to %d: %f", left, right, p)
         return p
 
     def faster_balanced_cap(self, sum_fn=log_add):
@@ -567,6 +589,8 @@ class Read:
         # This step filters minimizers we will definitely skip - needs to be coordinated with
         # get_log_prob_of_minimizer_skip function above
         filtered_minimizers = list(filter(minimizer_filter_fn, self.minimizers))
+        
+        self.visualize(minimizers=filtered_minimizers)
 
         c = np.full(len(filtered_minimizers) + 1, n_inf)  # Log10 prob of having mutated minimizers,
         # such that c[i+1] is log prob of mutating minimizers 0, 1, 2, ..., i
@@ -583,7 +607,9 @@ class Read:
                     c[i] = p
 
         assert c[-1] != n_inf
-        return -c[-1] * 10
+        cap = -c[-1] * 10
+        logger.debug("Overall cap: %s", cap)
+        return cap
 
     @staticmethod
     def parse_reads(reads_file, correct=True, max_reads=-1):
@@ -591,6 +617,7 @@ class Read:
         with open(reads_file) as fh:  # This masks a bug
             for line in fh:
                 reads.append(Read(line, correct))
+                print(reads[-1])
                 if max_reads != -1 and len(reads) > max_reads:
                     break
         return reads
@@ -610,7 +637,7 @@ class Reads:
             bins[i].append(read)
         return bins
 
-    def get_roc(self, map_q_fn=lambda read: round(read.map_q)):
+    def get_roc(self, map_q_fn=lambda read: round(read.uncapped_map_q)):
         """
         Compute a pseudo ROC curve for the reads
         :param map_q_fn: function which determines which value is used as the map-q
@@ -638,6 +665,7 @@ class Reads:
 
 
 def main():
+    logging.basicConfig(level=logging.DEBUG)
     start_time = time.time()
 
     # Parse the reads
@@ -646,15 +674,15 @@ def main():
 
     # Print some of the funky reads
     for i, read in enumerate(reads.reads):
-        if not read.correct and round(0.85 * min(2.0 * read.faster_cap(), read.map_q)) >= 60:
+        if not read.correct and round(0.85 * min(2.0 * read.faster_cap(), read.uncapped_map_q)) >= 60:
             print("Read {} {}".format(i, read))
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
     print("Roc unmodified", roc_unmodified)
-    roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.vg_computed_cap, r.map_q, 60)))
+    roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.vg_computed_cap, r.uncapped_map_q, 60)))
     print("Roc adam modified ", roc_adam_modified)
-    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70)))
+    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(0.85 * min(2.0 * r.faster_cap(), r.uncapped_map_q, 70)))
     print("Roc mode modified ", roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
