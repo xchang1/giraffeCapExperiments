@@ -657,7 +657,7 @@ class Reads:
         colors = ["r--", "bs", 'g^']  # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x: x[0], roc)), list(map(lambda x: x[1], roc)), color)
-        plt.savefig('roc.svg')
+        plt.savefig('roc.png')
         #plt.show()
 
 
@@ -690,7 +690,7 @@ def main():
     # plt.show()
     
     plt.scatter([x.vg_computed_cap for x in reads.reads], [x.faster_cap() for x in reads.reads])
-    plt.savefig('compare.svg')
+    plt.savefig('compare.png')
 
 
 if __name__ == '__main__':
