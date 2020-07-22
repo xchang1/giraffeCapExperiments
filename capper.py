@@ -514,7 +514,9 @@ class Read:
         :param sum_fn: Function for adding/maxing log probs in interval
         :return: log10 prob as float
         """
-        assert left < right  # We don't allow zero length intervals
+        if left == right:
+            # 0-length intervals do not need to be disrupted.
+            return 0
         p = self.get_log_prob_of_disruption_in_column(minimizers, left)
         for i in range(left + 1, right):
             p = sum_fn(self.get_log_prob_of_disruption_in_column(minimizers, i), p)
