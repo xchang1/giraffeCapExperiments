@@ -167,7 +167,7 @@ class Read:
         self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
         assert len(self.read) == len(self.qual_string)
         # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
-        self.map_q, self.adam_cap, self.xian_cap, self.stage = \
+        self.map_q, self.vg_computed_cap, self.xian_cap, self.stage = \
             float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
         self.correct = correct
         self.minimizers = sorted([Minimizer(tokens[i + 3], int(tokens[i + 4]), int(tokens[i + 5]), int(tokens[i + 6]),
@@ -197,8 +197,8 @@ class Read:
                 raise UnacceptableReadError(str(self))
 
     def __str__(self):
-        return "Read map_q:{} adam_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
-            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.map_q, self.adam_cap, self.xian_cap,
+        return "Read map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.map_q, self.vg_computed_cap, self.xian_cap,
                                                                     self.faster_cap(), self.faster_unique_cap(),
                                                                     self.faster_balanced_cap(), self.stage,
                                                                     self.read, " ".join(map(str, self.qual_string)),
@@ -250,7 +250,7 @@ class Read:
                     out.write(' ')
             out.write('\n')
 
-    def recompute_adam_cap(self):
+    def recompute_vg_computed_cap(self):
         """
         Recompute the "Adam Cap": probability of the most probable way to have
         errors at a set of bases, such that each error disrupts all minimizers
@@ -652,17 +652,20 @@ def main():
     # Make ROC curves
     roc_unmodified = reads.get_roc()
     print("Roc unmodified", roc_unmodified)
-    roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.adam_cap, r.map_q, 60)))
+    roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.vg_computed_cap, r.map_q, 60)))
     print("Roc adam modified ", roc_adam_modified)
     roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70)))
     print("Roc mode modified ", roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
-    # plt.scatter([x.adam_cap for x in reads.reads if not x.correct],
+    # plt.scatter([x.vg_computed_cap for x in reads.reads if not x.correct],
     # [x.faster_balanced_cap() for x in reads.reads if not x.correct])
-    # plt.scatter([x.adam_cap for x in reads.reads if x.correct],
+    # plt.scatter([x.vg_computed_cap for x in reads.reads if x.correct],
     # [x.faster_cap() for x in reads.reads if x.correct], 'g^')
     # plt.show()
+    
+    plt.scatter([x.vg_computed_cap for x in reads.reads], [x.faster_cap() for x in reads.reads])
+    plt.savefig('compare.svg')
 
 
 if __name__ == '__main__':
