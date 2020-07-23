@@ -674,7 +674,7 @@ def main():
     # plt.show()
     
     plt.clf()
-    plt.scatter([x.vg_computed_cap for x in reads.reads], [x.faster_cap() for x in reads.reads])
+    plt.scatter([x.vg_computed_cap for x in reads.reads], [2.0 * x.faster_cap() for x in reads.reads])
     plt.savefig('compare.png')
 
 
