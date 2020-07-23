@@ -21,15 +21,6 @@ def reverse_complement(dna):
 n_inf = float("-inf")
 
 
-def log_add(i, j):
-    def log_add_one(x):
-        return math.log10(math.pow(10, x) + 1)
-
-    if i < j:
-        return log_add_one(j - i) + i if j - i <= 10 else j
-    return log_add_one(i - j) + j if i - j <= 10 else i
-
-
 def prob_to_log10prob(prob):
     """
     Convert a raw probability to a log10 probability.
@@ -91,6 +82,7 @@ class Minimizer:
         # At hash = 1 only 1 of the 2^64 possibilities beats it.
         self.beat_prob = self.hash() / (2 ** 64)  # A float on 0-1 that represents the probability of beating this
         # minimizer's hash with a random other minimizer.
+        self.ln_one_minus_beat_prob = math.log(1.0 - self.beat_prob)
 
         # Consistency checks
         assert len(source_read) >= 0
@@ -155,6 +147,10 @@ class Read:
     """
     Represents a read and its minimizers.
     """
+
+    # Used to calculate log probs of disruption
+    # Note: I'm not sure what the range of qual values is, but is less than 128
+    qual_probs = [math.pow(10, (-i / 10)) for i in range(128)]
 
     def __init__(self, line, correct):
 
@@ -479,14 +475,14 @@ class Read:
         for interval in get_preceding_intervals(len(self.read)):
             yield interval
 
-    def get_log_prob_of_disruption_in_column(self, minimizers, index):
-        """ Gives the log10 prob of a base error in the given column of the read that disrupts all the
+    def get_prob_of_disruption_in_column(self, minimizers, index):
+        """ Gives the prob of a base error in the given column of the read that disrupts all the
         overlapping minimizers.
         :param minimizers: Minimizers to be disrupted
         :param index: Index of position in read
-        :return: log10 prob of disruption as float
+        :return: prob of disruption as float
         """
-        p = -(self.qual_string[index]) / 10
+        p = Read.qual_probs[self.qual_string[index]]  # Prob of base error
         for m in minimizers:
             if not (m.minimizer_start <= index < m.minimizer_start + len(m.minimizer)):
                 # Index is out of range of the minimizer
@@ -500,43 +496,42 @@ class Read:
                                           min(index - m.window_start + 1,
                                               (m.window_start + m.window_length) - index))
 
-                # We have that many chances to beat this minimizer.
-                p += log10prob_for_at_least_one(m.beat_prob, possible_minimizers)
+                # Prob that error creates a new minimizer
+                p *= 1.0 - math.exp(m.ln_one_minus_beat_prob * possible_minimizers)  # This may be faster
+                #p *= 1.0 - (1.0 - m.beat_prob) ** possible_minimizers
+
         return p
 
-    def get_log_prob_of_disruption_in_interval(self, minimizers, left, right, sum_fn=log_add):
+    def get_log_prob_of_disruption_in_interval(self, minimizers, left, right):
         """
         Gives the log10 prob of a base error in the given interval of the read,
         accounting for the disruption of minimizers
         :param minimizers: Minimizers to be disrupted
         :param left: Leftmost base in interval of read, inclusive
         :param right: Rightmost base in interval of read, exclusive
-        :param sum_fn: Function for adding/maxing log probs in interval
         :return: log10 prob as float
         """
         assert left < right  # We don't allow zero length intervals
-        p = self.get_log_prob_of_disruption_in_column(minimizers, left)
+        p = 1.0 - self.get_prob_of_disruption_in_column(minimizers, left)
         for i in range(left + 1, right):
-            p = sum_fn(self.get_log_prob_of_disruption_in_column(minimizers, i), p)
-        return p
+            p *= 1.0 - self.get_prob_of_disruption_in_column(minimizers, i)
+        return math.log10(1.0 - p)
 
-    def faster_balanced_cap(self, sum_fn=log_add):
+    def faster_balanced_cap(self):
         """ As faster_cap(), but scores minimizers
-        :param sum_fn: Function for adding/maxing log probs in interval
         :return: Phred scaled log prob of read being wrongly aligned
         """
-        x = self.faster_unique_cap(sum_fn=sum_fn)
-        y = self.faster_cap(sum_fn=sum_fn)
+        x = self.faster_unique_cap()
+        y = self.faster_cap()
         return min(x + 30, y)
 
-    def faster_unique_cap(self, sum_fn=log_add):
+    def faster_unique_cap(self):
         """ As faster_cap(), but only consider unique minimizers in the read.
-        :param sum_fn: Function for adding/maxing log probs in interval
         :return: Phred scaled log prob of read being wrongly aligned
         """
-        return self.faster_cap(sum_fn=sum_fn, minimizer_filter_fn=lambda x: 0 < x.hits_in_extension == x.hits)
+        return self.faster_cap(minimizer_filter_fn=lambda x: 0 < x.hits_in_extension == x.hits)
 
-    def faster_cap(self, sum_fn=log_add, minimizer_filter_fn=lambda x: x.hits_in_extension > 0):
+    def faster_cap(self, minimizer_filter_fn=lambda x: x.hits_in_extension > 0):
         """ Compute cap on the reads qual score by considering possibility that base errors and unlocated
         minimizer hits prevented us finding the true alignment.
 
@@ -558,7 +553,6 @@ class Read:
         We use dynamic programming sweeping left-to-right over the intervals to compute the probability of
         the minimum number of base errors needed to disrupt all the minimizers.
 
-        :param sum_fn: method for adding up probability of one or more base errors in an interval of bases
         :param minimizer_filter_fn: Function to filter which minimizers are considered
         :return: Phred scaled log prob of read being wrongly aligned
         """
@@ -572,8 +566,7 @@ class Read:
 
         for left, right, bottom, top in self.agglomeration_interval_iterator(filtered_minimizers):
             # Calculate prob of all intervals up to top being disrupted
-            p = c[bottom] + self.get_log_prob_of_disruption_in_interval(filtered_minimizers[bottom:top], left, right,
-                                                                        sum_fn=sum_fn)
+            p = c[bottom] + self.get_log_prob_of_disruption_in_interval(filtered_minimizers[bottom:top], left, right)
 
             # Replace min-prob for minimizers in the interval
             for i in range(bottom + 1, top + 1):
@@ -652,8 +645,9 @@ def main():
     print("Roc unmodified", roc_unmodified)
     roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.adam_cap, r.map_q, 60)))
     print("Roc adam modified ", roc_adam_modified)
+    start_time = time.time()
     roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70)))
-    print("Roc mode modified ", roc_new_sum_modified)
+    print("Roc mode modified (time:{}) ".format(time.time()-start_time), roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
     # plt.scatter([x.adam_cap for x in reads.reads if not x.correct],
