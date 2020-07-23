@@ -1,6 +1,6 @@
 import math
-import matplotlib
-matplotlib.use('Agg')
+# import matplotlib
+# matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import numpy as np
 import heapq
@@ -640,8 +640,8 @@ class Reads:
         colors = ["r--", "bs", 'g^']  # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x: x[0], roc)), list(map(lambda x: x[1], roc)), color)
-        plt.savefig('roc.png')
-        #plt.show()
+        # plt.savefig('roc.png')
+        plt.show()
 
 
 def main():
@@ -674,7 +674,7 @@ def main():
     # plt.show()
     
     plt.clf()
-    plt.scatter([x.vg_computed_cap for x in reads.reads], [2.0 * x.faster_cap() for x in reads.reads])
+    plt.scatter([x.vg_computed_cap for x in reads.reads], [2 * x.faster_cap() for x in reads.reads])
     plt.savefig('compare.png')
 
 
