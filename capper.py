@@ -17,9 +17,8 @@ def reverse_complement(dna):
     return ''.join(reversed(dna.translate(RC_TABLE)))
 
 
-# negative infinity
-n_inf = float("-inf")
-
+n_inf = float("-inf")  # negative infinity
+p_inf = float("inf")  # positive infinity
 
 def prob_to_log10prob(prob):
     """
@@ -142,7 +141,6 @@ class Minimizer:
 class UnacceptableReadError(RuntimeError):
     pass
 
-
 class Read:
     """
     Represents a read and its minimizers.
@@ -153,27 +151,38 @@ class Read:
     qual_probs = [math.pow(10, (-i / 10)) for i in range(128)]
 
     def __init__(self, line, correct):
-
         # Format is tab sep (on one line):
         # READ_STR QUAL_STR IGNORED
         # (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN
         # MAP_Q CAP CAP STAGE
-
         tokens = line.split()
-        self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
-        assert len(self.read) == len(self.qual_string)
+        self._parse_read(tokens, correct)
+
         # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
         self.map_q, self.adam_cap, self.xian_cap, self.stage = \
             float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+
+        self._parse_minimizers(tokens[3:-4])
+
+        self._check_minimizers()
+
+    def _parse_read(self, tokens, correct):
+        self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
+        assert len(self.read) == len(self.qual_string)
         self.correct = correct
-        self.minimizers = sorted([Minimizer(tokens[i + 3], int(tokens[i + 4]), int(tokens[i + 5]), int(tokens[i + 6]),
-                                            int(tokens[i + 7]), int(tokens[i + 8]), self.read) for i in
-                                  range(0, len(tokens) - 7, 6)],
-                                 key=lambda x: x.window_start)  # Sort by start coordinate
 
-        self.minimizers = sorted(self.minimizers, key=lambda x: x.minimizer_start)  # Fix broken minimizer ordering
+    def _parse_minimizers(self, tokens):
+        # (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN
+        self.minimizers = sorted([Minimizer(tokens[i], int(tokens[i+1]), int(tokens[i+2]), int(tokens[i+3]),
+                                            int(tokens[i+4]), int(tokens[i+5]), self.read) for i in
+                                  range(0, len(tokens), 6)],
+                                 key=lambda x: x.minimizer_start)  # Sort by minimizer coordinate
 
-        # Check they don't overlap and every window is accounted for
+    def _check_minimizers(self):
+        """
+        Checks via asserts that minimizers in read don't overlap and every window is accounted for
+        :return:
+        """
         p_window_start = -1
         p_window_end = -1
         for minimizer in self.minimizers:
@@ -446,7 +455,8 @@ class Read:
 
                 # Case where the left-most item ends before the start of the new item
                 if start_fn(stack[0]) + length_fn(stack[0]) <= right:
-                    yield left[0], start_fn(stack[0]) + length_fn(stack[0]), bottom[0], bottom[0] + len(stack)
+                    if left[0] < start_fn(stack[0]) + length_fn(stack[0]):  # If interval is zero length we skip it
+                        yield left[0], start_fn(stack[0]) + length_fn(stack[0]), bottom[0], bottom[0] + len(stack)
 
                     # If the stack contains only one item there is a gap between the item
                     # and the new item, otherwise just shift to the end of the leftmost item
@@ -498,7 +508,7 @@ class Read:
 
                 # Prob that error creates a new minimizer
                 p *= 1.0 - math.exp(m.ln_one_minus_beat_prob * possible_minimizers)  # This may be faster
-                #p *= 1.0 - (1.0 - m.beat_prob) ** possible_minimizers
+                #  p *= 1.0 - (1.0 - m.beat_prob) ** possible_minimizers
 
         return p
 
@@ -515,7 +525,7 @@ class Read:
         p = 1.0 - self.get_prob_of_disruption_in_column(minimizers, left)
         for i in range(left + 1, right):
             p *= 1.0 - self.get_prob_of_disruption_in_column(minimizers, i)
-        return math.log10(1.0 - p)
+        return math.log10(1.0 - p) if p < 1.0 else n_inf
 
     def faster_balanced_cap(self):
         """ As faster_cap(), but scores minimizers
@@ -579,7 +589,7 @@ class Read:
     @staticmethod
     def parse_reads(reads_file, correct=True, max_reads=-1):
         reads = []
-        with open(reads_file) as fh:  # This masks a bug
+        with open(reads_file) as fh:
             for line in fh:
                 reads.append(Read(line, correct))
                 if max_reads != -1 and len(reads) > max_reads:
@@ -635,18 +645,28 @@ def main():
     reads = Reads("minimizers_correct_1kg", "minimizers_incorrect_1kg", max_correct_reads=10000)
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
-    # Print some of the funky reads
+    def f(x): # Remove 0 values from mapq calcs
+        return x if x != 0 and x != -0 and x != n_inf else p_inf
+
+    def proposed_cap(r):
+        # The proposed map_q function
+        return round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70))
+
+    def current_cap(r):
+        return round(min(r.map_q, r.xian_cap, r.adam_cap, 60))
+
+    #  Print some of the funky reads
     for i, read in enumerate(reads.reads):
-        if not read.correct and round(0.85 * min(2.0 * read.faster_cap(), read.map_q)) >= 60:
+        if not read.correct and proposed_cap(read) >= 60:
             print("Read {} {}".format(i, read))
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
     print("Roc unmodified", roc_unmodified)
-    roc_adam_modified = reads.get_roc(map_q_fn=lambda r: round(min(r.adam_cap, r.map_q, 60)))
+    roc_adam_modified = reads.get_roc(map_q_fn=current_cap)
     print("Roc adam modified ", roc_adam_modified)
     start_time = time.time()
-    roc_new_sum_modified = reads.get_roc(map_q_fn=lambda r: round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70)))
+    roc_new_sum_modified = reads.get_roc(map_q_fn=proposed_cap)
     print("Roc mode modified (time:{}) ".format(time.time()-start_time), roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
