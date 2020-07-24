@@ -1,7 +1,7 @@
 import math
-# import matplotlib
-# matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import matplotlib
+#matplotlib.use('Agg')
+#import matplotlib.pyplot as plt
 import numpy as np
 import heapq
 import logging
@@ -651,7 +651,7 @@ class Reads:
         colors = ["r--", "bs", 'g^']  # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x: x[0], roc)), list(map(lambda x: x[1], roc)), color)
-        # plt.savefig('roc.png')
+        #plt.savefig('roc.png')
         plt.show()
 
 
