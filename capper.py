@@ -1,7 +1,7 @@
 import math
-# import matplotlib
-# matplotlib.use('Agg')
-import matplotlib.pyplot as plt
+import matplotlib
+#matplotlib.use('Agg')
+#import matplotlib.pyplot as plt
 import numpy as np
 import heapq
 import logging
@@ -154,15 +154,24 @@ class Read:
         # Format is tab sep (on one line):
         # READ_STR QUAL_STR IGNORED
         # (MINIMIZER_STR START WINDOW_START WINDOW_LENGTH HITS HITS_IN_EXTENSIONS?)xN
-        # MAP_Q CAP CAP STAGE
+        # UNCAPPED_MAP_Q CAP CAP STAGE
+
         tokens = line.split()
         self._parse_read(tokens, correct)
 
         # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
-        self.map_q, self.adam_cap, self.xian_cap, self.stage = \
-            float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
-
-        self._parse_minimizers(tokens[3:-4])
+        # Note that last correct stage may not be there
+        if len(tokens) % 6 == 1:
+            # Stage should be there
+            self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.stage = \
+                float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+        else:
+            # No stage
+            self.uncapped_map_q, self.vg_computed_cap, self.xian_cap = \
+                float(tokens[-3]), float(tokens[-2]), float(tokens[-1])
+            self.stage = "unknown"
+        
+        self._parse_minimizers(tokens[3:(-4 if len(tokens) % 6 == 1 else -3)])
 
         self._check_minimizers()
 
@@ -202,17 +211,21 @@ class Read:
                 raise UnacceptableReadError(str(self))
 
     def __str__(self):
-        return "Read map_q:{} adam_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
-            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.map_q, self.adam_cap, self.xian_cap,
+        return "Read uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.uncapped_map_q, self.vg_computed_cap, self.xian_cap,
                                                                     self.faster_cap(), self.faster_unique_cap(),
                                                                     self.faster_balanced_cap(), self.stage,
                                                                     self.read, " ".join(map(str, self.qual_string)),
                                                                     "\n\t".join(map(str, self.minimizers)))
 
-    def visualize(self, out=sys.stdout):
+    def visualize(self, out=sys.stdout, minimizers=None):
         """
         Print out the read sequence with the minimizers aligned below it.
         """
+
+        # Work out the set of minimizers we want
+        if minimizers is None:
+            minimizers = self.minimizers
 
         # First all the position numbers
 
@@ -233,7 +246,7 @@ class Read:
         out.write('\n')
 
         # Then the minimizers
-        for minimizer in self.minimizers:
+        for minimizer in minimizers:
             # Work out what orientation to print
             minimizer_text = minimizer.minimizer if not minimizer.is_reverse else reverse_complement(
                 minimizer.minimizer)
@@ -255,7 +268,7 @@ class Read:
                     out.write(' ')
             out.write('\n')
 
-    def recompute_adam_cap(self):
+    def recompute_vg_computed_cap(self):
         """
         Recompute the "Adam Cap": probability of the most probable way to have
         errors at a set of bases, such that each error disrupts all minimizers
@@ -521,7 +534,9 @@ class Read:
         :param right: Rightmost base in interval of read, exclusive
         :return: log10 prob as float
         """
-        assert left < right  # We don't allow zero length intervals
+        if left == right:
+            # 0-length intervals do not need to be disrupted.
+            return 0
         p = 1.0 - self.get_prob_of_disruption_in_column(minimizers, left)
         for i in range(left + 1, right):
             p *= 1.0 - self.get_prob_of_disruption_in_column(minimizers, i)
@@ -569,7 +584,7 @@ class Read:
         # This step filters minimizers we will definitely skip - needs to be coordinated with
         # get_log_prob_of_minimizer_skip function above
         filtered_minimizers = list(filter(minimizer_filter_fn, self.minimizers))
-
+        
         c = np.full(len(filtered_minimizers) + 1, n_inf)  # Log10 prob of having mutated minimizers,
         # such that c[i+1] is log prob of mutating minimizers 0, 1, 2, ..., i
         c[0] = 0.0
@@ -584,7 +599,9 @@ class Read:
                     c[i] = p
 
         assert c[-1] != n_inf
-        return -c[-1] * 10
+        cap = -c[-1] * 10
+        logger.debug("Overall cap: %s", cap)
+        return cap
 
     @staticmethod
     def parse_reads(reads_file, correct=True, max_reads=-1):
@@ -611,7 +628,7 @@ class Reads:
             bins[i].append(read)
         return bins
 
-    def get_roc(self, map_q_fn=lambda read: round(read.map_q)):
+    def get_roc(self, map_q_fn=lambda read: round(read.uncapped_map_q)):
         """
         Compute a pseudo ROC curve for the reads
         :param map_q_fn: function which determines which value is used as the map-q
@@ -634,11 +651,12 @@ class Reads:
         colors = ["r--", "bs", 'g^']  # This needs to be extended if you want more than three lines on the plot
         for roc, color in zip(rocs, colors):
             plt.plot(list(map(lambda x: x[0], roc)), list(map(lambda x: x[1], roc)), color)
-        # plt.savefig('roc.svg')
+        #plt.savefig('roc.png')
         plt.show()
 
 
 def main():
+    logging.basicConfig(level=logging.INFO)
     start_time = time.time()
 
     # Parse the reads
@@ -650,10 +668,10 @@ def main():
 
     def proposed_cap(r):
         # The proposed map_q function
-        return round(0.85 * min(2.0 * r.faster_cap(), r.map_q, 70))
+        return round(0.85 * min(2.0 * r.faster_cap(), r.uncapped_map_q, 70))
 
     def current_cap(r):
-        return round(min(r.map_q, r.xian_cap, r.adam_cap, 60))
+        return round(min(r.uncapped_map_q, r.xian_cap, r.adam_cap, 60))
 
     #  Print some of the funky reads
     for i, read in enumerate(reads.reads):
@@ -670,11 +688,15 @@ def main():
     print("Roc mode modified (time:{}) ".format(time.time()-start_time), roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
 
-    # plt.scatter([x.adam_cap for x in reads.reads if not x.correct],
+    # plt.scatter([x.vg_computed_cap for x in reads.reads if not x.correct],
     # [x.faster_balanced_cap() for x in reads.reads if not x.correct])
-    # plt.scatter([x.adam_cap for x in reads.reads if x.correct],
+    # plt.scatter([x.vg_computed_cap for x in reads.reads if x.correct],
     # [x.faster_cap() for x in reads.reads if x.correct], 'g^')
     # plt.show()
+    
+    plt.clf()
+    plt.scatter([x.vg_computed_cap for x in reads.reads], [2 * x.faster_cap() for x in reads.reads])
+    plt.savefig('compare.png')
 
 
 if __name__ == '__main__':
