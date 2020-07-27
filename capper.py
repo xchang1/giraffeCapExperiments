@@ -1,7 +1,7 @@
 import math
 import matplotlib
 #matplotlib.use('Agg')
-#import matplotlib.pyplot as plt
+import matplotlib.pyplot as plt
 import numpy as np
 import heapq
 import logging
@@ -660,7 +660,7 @@ def main():
     start_time = time.time()
 
     # Parse the reads
-    reads = Reads("minimizers_correct_1kg", "minimizers_incorrect_1kg", max_correct_reads=10000)
+    reads = Reads("minimizers_1kg_single/minimizers_correct_1kg", "minimizers_1kg_single/minimizers_incorrect_1kg", max_correct_reads=10000)
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
     def f(x): # Remove 0 values from mapq calcs
@@ -671,7 +671,7 @@ def main():
         return round(0.85 * min(2.0 * r.faster_cap(), r.uncapped_map_q, 70))
 
     def current_cap(r):
-        return round(min(r.uncapped_map_q, r.xian_cap, r.adam_cap, 60))
+        return round(min(r.uncapped_map_q, f(r.xian_cap), r.vg_computed_cap, 60))
 
     #  Print some of the funky reads
     for i, read in enumerate(reads.reads):

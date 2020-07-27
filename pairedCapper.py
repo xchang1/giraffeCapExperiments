@@ -3,6 +3,7 @@ from capper import Read, Reads, n_inf, p_inf, UnacceptableReadError
 #matplotlib.use('Agg')
 import matplotlib.pyplot as plt
 import time
+import math
 
 
 class PairedRead(Read):
@@ -36,12 +37,15 @@ class PairedRead(Read):
         self._parse_read(tokens, correct)
 
         self.fragment_clusters, self.rescued, self.rescuer, self.fragment_length = \
-            int(tokens[2]), bool(tokens[3]), bool(tokens[4]), int(tokens[5])
+            int(tokens[2]), bool(int(tokens[3])), bool(int(tokens[4])), int(tokens[5])
 
         # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
         self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.capped_map_q, self.stage = \
             float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
-        
+
+        if self.uncapped_map_q < 0:
+            self.uncapped_map_q = 0
+
         try:
             self._parse_minimizers(tokens[6:-6])
         except ValueError:
@@ -64,13 +68,13 @@ class PairedRead(Read):
                 if mixed:  # Deal with read pairs where one is correctly
                     # mapped and the other is not
                     tokens = line.split()
-                    correct = bool(tokens[-1])
+                    correct = bool(int(tokens[-1]))
                     line = "\t".join(tokens[:-1])
                 
-                try:
-                    reads.append(PairedRead(line, correct))
-                except UnacceptableReadError:
-                    continue
+                #try:
+                reads.append(PairedRead(line, correct))
+                #except UnacceptableReadError:
+                #    continue
                 if pair is not None:  # Has a pair
                     reads[-1].pair = pair
                     pair.pair = reads[-1]
@@ -95,20 +99,32 @@ def main():
     start_time = time.time()
 
     # Parse the reads
-    reads = PairedReads("minimizers_paired/minimizers_correct_1kg_paired",
-                        "minimizers_paired/minimizers_incorrect_1kg_paired",
-                        "minimizers_paired/minimizers_mixed_1kg_paired",
-                        )  # max_correct_reads=10000)
+    reads = PairedReads("minimizers_1kg_paired/minimizers_correct_1kg_paired",
+                        "minimizers_1kg_paired/minimizers_incorrect_1kg_paired",
+                        "minimizers_1kg_paired/minimizers_mixed_1kg_paired",
+                        ) #max_correct_reads=10000)
 
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
+
+    def xian_cap_mod(x):
+        if x == n_inf:
+            return p_inf
+        if x == 0.0:
+            return p_inf
+        y = math.pow(10, (-x/10.0))
+        return -10 * math.log10(1 - y)
+
     def f(x):  # Remove 0 values from mapq calcs
-        return x if x != 0 and x != -0 and x != n_inf else p_inf
+        return x if x != n_inf else p_inf  # the str 0.0 is there because -0.0 is actually 0
 
     def proposed_cap(r):
         # The proposed map_q function
-        return round(min(f(r.xian_cap), f(r.score_group_map_q/2.0),
-                     r.faster_cap() + r.pair.faster_cap(), r.uncapped_map_q, 60))
+        return round(min(f(r.score_group_map_q/2.0), xian_cap_mod(r.xian_cap),
+                     (r.faster_cap() + r.pair.faster_cap()), r.uncapped_map_q, 60))
+
+    def f2(x):  # Remove 0 values from mapq calcs
+        return x if x != n_inf and str(x) != str(0.0) else p_inf  # the str 0.0 is there because -0.0 is actually 0
 
     def current_cap(r):
         """
@@ -117,16 +133,25 @@ def main():
         (ii) fragment cluster cap (r.xian_cap),
         (iii) score group mapq divided by 2 (r.score_group_map_q), and
         (iv) mapq extend cap (r.vg_computed_cap)
-        If a value is 0, -0, inf, or -inf then it is ignored
+        If a value is 0, inf, or -inf then it is ignored
         :param r:
         :return:
         """
-        return round(min(r.uncapped_map_q, f(r.xian_cap), f(r.score_group_map_q/2.0), max(r.vg_computed_cap, r.pair.vg_computed_cap), 60))
+        vg_computed_cap = r.pair.vg_computed_cap if r.vg_computed_cap == p_inf else (r.vg_computed_cap if r.pair.vg_computed_cap == p_inf
+                                                                else max(r.vg_computed_cap, r.pair.vg_computed_cap))
+        vg_computed_cap = vg_computed_cap if vg_computed_cap != n_inf else p_inf
+        map_q = int(min(r.uncapped_map_q, f2(r.xian_cap), f2(r.score_group_map_q/2.0), vg_computed_cap, 60))
+        assert(map_q == r.capped_map_q)
+        return r.capped_map_q #map_q
 
     # Print some of the funky reads
+    wrong = 0
     for i, read in enumerate(reads.reads):
-        if not read.correct and proposed_cap(read) >= 60:
-            print("Read {} {}".format(i, read))
+        if not read.correct and current_cap(read) >= 60:
+            # print("Read {} {}".format(i, read))
+            print("Read {}".format(i))
+            wrong += 1
+    print("We got {} wrong".format(wrong))
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
@@ -144,13 +169,13 @@ def main():
     # [x.faster_cap() for x in reads.reads if x.correct], 'g^')
     # plt.show()
     
-    plt.clf()
-    plt.scatter([x.capped_map_q for x in reads.reads], [proposed_cap(x) for x in reads.reads])
-    plt.savefig('compare.png')
+    #plt.clf()
+    #plt.scatter([x.capped_map_q for x in reads.reads], [proposed_cap(x) for x in reads.reads])
+    #plt.savefig('compare.png')
     
-    for read in reads.reads:
-        if abs(read.capped_map_q - proposed_cap(read)) > 2:
-            print("Got {} but vg got {} for {}".format(proposed_cap(read), read.capped_map_q, read))
+    #for read in reads.reads:
+    #    if abs(read.capped_map_q - proposed_cap(read)) > 2:
+    #        print("Got {} but vg got {} for {}".format(proposed_cap(read), read.capped_map_q, read))
 
 
 if __name__ == '__main__':
