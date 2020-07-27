@@ -107,8 +107,7 @@ def main():
 
     def proposed_cap(r):
         # The proposed map_q function
-        # Note that Xian's cap can go all the way to 0.
-        return round(min(r.xian_cap, f(r.score_group_map_q/2.0),
+        return round(min(f(r.xian_cap), f(r.score_group_map_q/2.0),
                      r.faster_cap() + r.pair.faster_cap(), r.uncapped_map_q, 60))
 
     def current_cap(r):
