@@ -102,7 +102,7 @@ def main():
     reads = PairedReads("minimizers_1kg_paired/minimizers_correct_1kg_paired",
                         "minimizers_1kg_paired/minimizers_incorrect_1kg_paired",
                         "minimizers_1kg_paired/minimizers_mixed_1kg_paired",
-                        ) #max_correct_reads=10000)
+                        max_correct_reads=10000)
 
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
@@ -120,8 +120,13 @@ def main():
 
     def proposed_cap(r):
         # The proposed map_q function
+
+        # Note the f function is different to f2 in the current cap - I suspect a bug in the way that
+        # the way we modify the score_group_map_q and xian_cap exists in Giraffe
+        # that treats 0.0s weirdly.
+
         return round(min(f(r.score_group_map_q/2.0), xian_cap_mod(r.xian_cap),
-                     (r.faster_cap() + r.pair.faster_cap()), r.uncapped_map_q, 60))
+                     r.faster_cap() + r.pair.faster_cap(), r.uncapped_map_q, 60))
 
     def f2(x):  # Remove 0 values from mapq calcs
         return x if x != n_inf and str(x) != str(0.0) else p_inf  # the str 0.0 is there because -0.0 is actually 0
@@ -147,9 +152,8 @@ def main():
     # Print some of the funky reads
     wrong = 0
     for i, read in enumerate(reads.reads):
-        if not read.correct and current_cap(read) >= 60:
-            # print("Read {} {}".format(i, read))
-            print("Read {}".format(i))
+        if not read.correct and proposed_cap(read) >= 60:
+            print("Read {} {}".format(i, read))
             wrong += 1
     print("We got {} wrong".format(wrong))
 
