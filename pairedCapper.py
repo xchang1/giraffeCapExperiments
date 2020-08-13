@@ -40,14 +40,14 @@ class PairedRead(Read):
             int(tokens[2]), bool(int(tokens[3])), bool(int(tokens[4])), int(tokens[5])
 
         # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
-        self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.capped_map_q, self.stage = \
-            float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+        self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.stage = \
+            float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
 
         if self.uncapped_map_q < 0:
             self.uncapped_map_q = 0
 
         try:
-            self._parse_minimizers(tokens[6:-6])
+            self._parse_minimizers(tokens[6:-7])
         except ValueError:
             # Probably a single-end read
             raise UnacceptableReadError("Probably single-ended")
@@ -58,6 +58,20 @@ class PairedRead(Read):
         self._check_minimizers()
 
         self.pair = None  # Pair is initially none
+
+    def __str__(self):
+        return "Read uncapped_map_q:{} rescued: {} rescuer: {} fragment_clusters: {} fragment_length: {} \n" \
+            "vg_computed_cap:{} xian_cap:{} score_group_map_q: {} " \
+            "faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.uncapped_map_q, self.rescued, self.rescuer,
+                                                                    self.fragment_clusters, self.fragment_length,
+                                                                    self.vg_computed_cap, self.xian_cap,
+                                                                    self.score_group_map_q, self.faster_cap(),
+                                                                    self.faster_unique_cap(),
+                                                                    self.faster_balanced_cap(), self.stage,
+                                                                    self.read, " ".join(map(str, self.qual_string)),
+                                                                    "\n\t".join(map(str, self.minimizers)))
+
 
     @staticmethod
     def parse_reads(reads_file, correct=True, mixed=False, max_reads=-1):
@@ -99,21 +113,12 @@ def main():
     start_time = time.time()
 
     # Parse the reads
-    reads = PairedReads("minimizers_1kg_paired/minimizers_correct_1kg_paired",
-                        "minimizers_1kg_paired/minimizers_incorrect_1kg_paired",
-                        "minimizers_1kg_paired/minimizers_mixed_1kg_paired",
+    reads = PairedReads("minimizers_1kg_paired/minimizers_correct_paired",
+                        "minimizers_1kg_paired/minimizers_incorrect_paired",
+                        "minimizers_1kg_paired/minimizers_mixed_paired",
                         max_correct_reads=10000)
 
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
-
-
-    def xian_cap_mod(x):
-        if x == n_inf:
-            return p_inf
-        if x == 0.0:
-            return p_inf
-        y = math.pow(10, (-x/10.0))
-        return -10 * math.log10(1 - y)
 
     def f(x):  # Remove 0 values from mapq calcs
         return x if x != n_inf else p_inf  # the str 0.0 is there because -0.0 is actually 0
@@ -125,11 +130,13 @@ def main():
         # the way we modify the score_group_map_q and xian_cap exists in Giraffe
         # that treats 0.0s weirdly.
 
-        return round(min(f(r.score_group_map_q/2.0), xian_cap_mod(r.xian_cap),
-                     r.faster_cap() + r.pair.faster_cap(), r.uncapped_map_q, 60))
+        # r.score_group_map_q/6.0,
 
-    def f2(x):  # Remove 0 values from mapq calcs
-        return x if x != n_inf and str(x) != str(0.0) else p_inf  # the str 0.0 is there because -0.0 is actually 0
+        #return int(min(r.xian_new_cap, (r.faster_cap() + r.pair.faster_cap()),
+        #               r.uncapped_map_q, 60))
+
+        return int(min(r.xian_cap, (r.faster_cap() + r.pair.faster_cap()),
+                       r.uncapped_map_q, 60))
 
     def current_cap(r):
         """
@@ -142,20 +149,28 @@ def main():
         :param r:
         :return:
         """
-        vg_computed_cap = r.pair.vg_computed_cap if r.vg_computed_cap == p_inf else (r.vg_computed_cap if r.pair.vg_computed_cap == p_inf
-                                                                else max(r.vg_computed_cap, r.pair.vg_computed_cap))
-        vg_computed_cap = vg_computed_cap if vg_computed_cap != n_inf else p_inf
-        map_q = int(min(r.uncapped_map_q, f2(r.xian_cap), f2(r.score_group_map_q/2.0), vg_computed_cap, 60))
-        assert(map_q == r.capped_map_q)
+        #map_q = int(min(r.uncapped_map_q, r.xian_cap, r.score_group_map_q/2.0, (r.vg_computed_cap+r.pair.vg_computed_cap)/2.0, 60))
+        #assert map_q == r.capped_map_q
         return r.capped_map_q #map_q
 
     # Print some of the funky reads
     wrong = 0
+    stages_wrong = {}
+    rescued_wrong = 0
+    rescuer_wrong = 0
     for i, read in enumerate(reads.reads):
-        if not read.correct and proposed_cap(read) >= 60:
+        if not read.correct and proposed_cap(read) >= 30:
             print("Read {} {}".format(i, read))
             wrong += 1
-    print("We got {} wrong".format(wrong))
+            if read.stage not in stages_wrong:
+                stages_wrong[read.stage] = 0
+            stages_wrong[read.stage] += 1
+            if read.rescued:
+                rescued_wrong += 1
+            if read.rescuer:
+                rescuer_wrong += 1
+    print("We got {} wrong, {} rescued-wrong, {} rescuer-wrong".format(wrong, rescued_wrong, rescuer_wrong))
+    print("We got them wrong at these stages: ", stages_wrong)
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()

@@ -83,6 +83,8 @@ class Minimizer:
         # minimizer's hash with a random other minimizer.
         self.ln_one_minus_beat_prob = math.log(1.0 - self.beat_prob)
 
+        self.source_read = source_read  # Store a pointer to the source read
+
         # Consistency checks
         assert len(source_read) >= 0
         assert minimizer_start >= 0 and minimizer_start + len(minimizer) <= len(source_read)
@@ -159,19 +161,11 @@ class Read:
         tokens = line.split()
         self._parse_read(tokens, correct)
 
-        # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
-        # Note that last correct stage may not be there
-        if len(tokens) % 6 == 1:
-            # Stage should be there
-            self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.stage = \
-                float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
-        else:
-            # No stage
-            self.uncapped_map_q, self.vg_computed_cap, self.xian_cap = \
-                float(tokens[-3]), float(tokens[-2]), float(tokens[-1])
-            self.stage = "unknown"
+        # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  final map_q last correct stage
+        self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.capped_map_q, self.alignment_score, self.has_secondary, self.stage = \
+                float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), bool(int(tokens[-2])), tokens[-1]
         
-        self._parse_minimizers(tokens[3:(-4 if len(tokens) % 6 == 1 else -3)])
+        self._parse_minimizers(tokens[3:-7])
 
         self._check_minimizers()
 
@@ -185,7 +179,7 @@ class Read:
         self.minimizers = sorted([Minimizer(tokens[i], int(tokens[i+1]), int(tokens[i+2]), int(tokens[i+3]),
                                             int(tokens[i+4]), int(tokens[i+5]), self.read) for i in
                                   range(0, len(tokens), 6)],
-                                 key=lambda x: x.minimizer_start)  # Sort by minimizer coordinate
+                                 key=lambda x: x.minimizer_start)  # Sort by minimizers by minimizer start coordinate
 
     def _check_minimizers(self):
         """
@@ -196,12 +190,12 @@ class Read:
         p_window_end = -1
         for minimizer in self.minimizers:
             if p_window_start > minimizer.window_start:
-                # Read contains minimizers that are out of order or overlap on start coordinates
+                # Read contains minimizers that are out of order on start coordinates
                 raise UnacceptableReadError(str(self))
             p_window_start = minimizer.window_start
 
             if p_window_end > minimizer.window_start + minimizer.window_length:
-                # Read contains minimizers that are out of order or overlap on end coordinates
+                # Read contains minimizers that are out of order on end coordinates
                 raise UnacceptableReadError(str(self))
 
             p_window_end = minimizer.window_start + minimizer.window_length
@@ -211,8 +205,10 @@ class Read:
                 raise UnacceptableReadError(str(self))
 
     def __str__(self):
-        return "Read uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
-            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.uncapped_map_q, self.vg_computed_cap, self.xian_cap,
+        return "Read correct:{} has_secondary:{} primary_alignment_score:{} uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.correct, self.has_secondary,
+                                                                    self.alignment_score, self.uncapped_map_q,
+                                                                    self.vg_computed_cap, self.xian_cap,
                                                                     self.faster_cap(), self.faster_unique_cap(),
                                                                     self.faster_balanced_cap(), self.stage,
                                                                     self.read, " ".join(map(str, self.qual_string)),
@@ -603,6 +599,31 @@ class Read:
         logger.debug("Overall cap: %s", cap)
         return cap
 
+    def avg_unexplored_minimizers(self):
+        """
+        The avg. number of unexplored minimizers per window.
+        """
+        windows = 0
+        unexplored_minimizer_seeds = 0.0
+        for m in self.minimizers:
+            if m.hits > 0 and m.hits_in_extension > 0:
+                i = m.window_length - Minimizer.total_window_length + 1
+                unexplored_minimizer_seeds += (m.hits - m.hits_in_extension) * i
+                windows += i
+
+        return unexplored_minimizer_seeds/windows if windows > 0 else 0.0
+
+    def unexplored_minimizers_windows(self):
+        """
+        Number of windows in the read not explored
+        :return:
+        """
+        unexplored_minimizers = 0
+        for m in self.minimizers:
+            if m.hits_in_extension == 0 and m.hits > 0:
+                unexplored_minimizers += m.window_length - Minimizer.total_window_length + 1
+        return unexplored_minimizers
+
     @staticmethod
     def parse_reads(reads_file, correct=True, max_reads=-1):
         reads = []
@@ -660,23 +681,61 @@ def main():
     start_time = time.time()
 
     # Parse the reads
-    reads = Reads("minimizers_1kg_single/minimizers_correct_1kg", "minimizers_1kg_single/minimizers_incorrect_1kg", max_correct_reads=10000)
+    reads = Reads("minimizers_1kg_single/minimizers_correct",
+                  "minimizers_1kg_single/minimizers_incorrect",
+                  max_correct_reads=10000)
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
-    def f(x): # Remove 0 values from mapq calcs
-        return x if x != 0 and x != -0 and x != n_inf else p_inf
-
     def proposed_cap(r):
-        # The proposed map_q function
-        return round(0.85 * min(2.0 * r.faster_cap(), r.uncapped_map_q, 70))
+        escape_bonus = 0.0 if r.uncapped_map_q < 1000 else 20
+        #escape_bonus = 0.0 if total_unexplored_minimizers(r) >= 10 else 20
+
+        #if r.alignment_score >= 140:
+        #    escape_bonus += 10
+
+        #if total_unexplored_minimizers(r) <= 10 and r.has_secondary:
+        #    escape_bonus += 10
+
+        #escape_bonus = 1.0
+        #if r.alignment_score >= 0 and (r.uncapped_map_q >= 1000 or (
+        #            total_unexplored_minimizers(r) <= 100)):
+        #    escape_bonus = 2.0
+        #if
+
+        #escape_bonus = 1.0 if r.has_secondary else 2.0
+
+        # math.log10(1 + total_unexplored_minimizers_coverage(r)*total_unexplored_minimizers(r)) <= 1 \
+        #if total_unexplored_minimizers(r) <= 100 or \
+        #        (r.uncapped_map_q > 1000 and total_explored_minimizers_coverage(r) > 2) \
+        #        or (r.uncapped_map_q >= 60 and r.alignment_score >= 160 and total_explored_minimizers_coverage(r) > 2):
+        #    #escape_cap -= 30
+        #    escape_bonus = 2.0
+
+        #cap = round(0.85 * min(escape_bonus + r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
+        cap = round(min(escape_bonus + r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
+        return cap
 
     def current_cap(r):
-        return round(min(r.uncapped_map_q, f(r.xian_cap), r.vg_computed_cap, 60))
+        """
+        if r.xian_cap != p_inf:
+            print("what", r.capped_map_q, int(min(r.uncapped_map_q, r.xian_cap, r.vg_computed_cap, 60)), r.uncapped_map_q, r.xian_cap, r.vg_computed_cap)
+        if r.capped_map_q != int(min(r.uncapped_map_q, r.xian_cap, r.vg_computed_cap, 60)):
+            print("wait", r.capped_map_q, int(min(r.uncapped_map_q, r.xian_cap, r.vg_computed_cap, 60)),
+                  r.uncapped_map_q, r.xian_cap, r.vg_computed_cap)
+        """
+        return r.capped_map_q  # round(min(r.uncapped_map_q, f(r.xian_cap), r.vg_computed_cap, 60))
 
     #  Print some of the funky reads
+    stages = {}
+    total_wrong = 0
     for i, read in enumerate(reads.reads):
-        if not read.correct and proposed_cap(read) >= 60:
-            print("Read {} {}".format(i, read))
+        if not read.correct and current_cap(read) >= 20: # and read.stage == "cluster":
+            #print("Read {} {}".format(i, read))
+            if read.stage not in stages:
+                stages[read.stage] = 0
+            stages[read.stage] += 1
+            total_wrong += 1
+    print("Total wrong", total_wrong, "Wrong stages single end:", stages)
 
     # Make ROC curves
     roc_unmodified = reads.get_roc()
@@ -687,6 +746,40 @@ def main():
     roc_new_sum_modified = reads.get_roc(map_q_fn=proposed_cap)
     print("Roc mode modified (time:{}) ".format(time.time()-start_time), roc_new_sum_modified)
     Reads.plot_rocs([roc_unmodified, roc_adam_modified, roc_new_sum_modified])
+    return
+    # Downstream analysis
+
+    def assess(read_subset, scalar=1.0):
+        total_read_count = 0
+        read_count = 0
+        stages = {}
+        for read in read_subset:
+            if read.capped_map_q >= 0:
+                total_read_count += 1
+                if read.alignment_score >= 100 and (read.uncapped_map_q >= 1000 or (read.uncapped_map_q >= 20 and read.avg_unexplored_minimizers() <= 10)):
+                        #math.log10(1 + total_unexplored_minimizers_coverage(read)*total_unexplored_minimizers(read)) <= 1): # or read.faster_unique_cap() > 30):
+                    read_count += 1
+                    if read.stage not in stages:
+                        stages[read.stage] = 0
+                    stages[read.stage] += 1
+                    #if not read.correct:
+                    #    print(read)
+        print("total reads ", total_read_count*scalar, read_count*scalar, read_count/(total_read_count+0.0000001), read_count/(len(read_subset)), total_read_count, read_count, stages)
+
+    print("correct:")
+    assess([r for r in reads.reads if r.correct], 2000000/10000)
+    print("wrong:")
+    assess([r for r in reads.reads if not r.correct])
+
+    correct_reads = [x for x in reads.reads if x.correct and 60 > x.capped_map_q >= 20]
+    wrong_reads = [x for x in reads.reads if not x.correct and x.capped_map_q >= 20]
+
+    print("Correct reads: ", sum([1 for x in correct_reads if total_unexplored_minimizers(x) <= 300])/len(correct_reads), len(correct_reads))
+    print("Wrong reads: ", sum([1 for x in wrong_reads if total_unexplored_minimizers(x) >= 300])/len(wrong_reads), len(wrong_reads))
+
+    plt.hist([math.log10(total_unexplored_minimizers(x)) if total_unexplored_minimizers(x) > 0 else 0.0 for x in correct_reads ], bins=30)
+    plt.yscale('log')
+    #plt.show()
 
     # plt.scatter([x.vg_computed_cap for x in reads.reads if not x.correct],
     # [x.faster_balanced_cap() for x in reads.reads if not x.correct])
@@ -694,9 +787,9 @@ def main():
     # [x.faster_cap() for x in reads.reads if x.correct], 'g^')
     # plt.show()
     
-    plt.clf()
-    plt.scatter([x.vg_computed_cap for x in reads.reads], [2 * x.faster_cap() for x in reads.reads])
-    plt.savefig('compare.png')
+    #plt.clf()
+    #plt.scatter([x.vg_computed_cap for x in reads.reads], [2 * x.faster_cap() for x in reads.reads])
+    #plt.savefig('compare.png')
 
 
 if __name__ == '__main__':
