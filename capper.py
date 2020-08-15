@@ -161,13 +161,19 @@ class Read:
         tokens = line.split()
         self._parse_read(tokens, correct)
 
-        # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  final map_q last correct stage
-        self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.capped_map_q, self.alignment_score, self.has_secondary, self.stage = \
-                float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), bool(int(tokens[-2])), tokens[-1]
-        
+        #read, qv string,  # clusters, (minimizer, offset of minimizer in read, agglomeration start, agglomeration length, # hits, # hits that make it into an extension)xN,
+        # raw mapq, adam cap, xian cap, final mapq, comma separated list of #clusters kept / # clusters with the same score, comma separated list of all alignment scores, last correct stage
+
+        self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.capped_map_q = \
+            float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4])
+        self.clusters, self.alignment_scores, self.stage = [i for i in tokens[-3].split(",") if i != ""], \
+                sorted([float(i) for i in tokens[-2].split(",") if i != ""]), tokens[-1]
+
         self._parse_minimizers(tokens[3:-7])
 
         self._check_minimizers()
+
+        self.faster_cap_precomputed = self.faster_cap()  # Precompute the faster cap
 
     def _parse_read(self, tokens, correct):
         self.read, self.qual_string = tokens[0], [ord(i) - ord("!") for i in tokens[1]]
@@ -205,9 +211,10 @@ class Read:
                 raise UnacceptableReadError(str(self))
 
     def __str__(self):
-        return "Read correct:{} has_secondary:{} primary_alignment_score:{} uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
-            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.correct, self.has_secondary,
-                                                                    self.alignment_score, self.uncapped_map_q,
+        return "Read correct:{} alignment_count:{} primary_alignment_score:{} alignment_scores:{} uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+            "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.correct, len(self.alignment_scores),
+                                                                    max(self.alignment_scores),
+                                                                    self.alignment_scores, self.uncapped_map_q,
                                                                     self.vg_computed_cap, self.xian_cap,
                                                                     self.faster_cap(), self.faster_unique_cap(),
                                                                     self.faster_balanced_cap(), self.stage,
@@ -606,9 +613,9 @@ class Read:
         windows = 0
         unexplored_minimizer_seeds = 0.0
         for m in self.minimizers:
-            if m.hits > 0 and m.hits_in_extension > 0:
+            if m.hits > 0 and m.hits_in_extension == 0:
                 i = m.window_length - Minimizer.total_window_length + 1
-                unexplored_minimizer_seeds += (m.hits - m.hits_in_extension) * i
+                unexplored_minimizer_seeds += m.hits  * i
                 windows += i
 
         return unexplored_minimizer_seeds/windows if windows > 0 else 0.0
@@ -679,7 +686,6 @@ class Reads:
 def main():
     logging.basicConfig(level=logging.INFO)
     start_time = time.time()
-
     # Parse the reads
     reads = Reads("minimizers_1kg_single/minimizers_correct",
                   "minimizers_1kg_single/minimizers_incorrect",
@@ -690,26 +696,11 @@ def main():
         escape_bonus = 0.0 if r.uncapped_map_q < 1000 else 20
         #escape_bonus = 0.0 if total_unexplored_minimizers(r) >= 10 else 20
 
-        #if r.alignment_score >= 140:
-        #    escape_bonus += 10
-
-        #if total_unexplored_minimizers(r) <= 10 and r.has_secondary:
-        #    escape_bonus += 10
-
         #escape_bonus = 1.0
         #if r.alignment_score >= 0 and (r.uncapped_map_q >= 1000 or (
         #            total_unexplored_minimizers(r) <= 100)):
         #    escape_bonus = 2.0
         #if
-
-        #escape_bonus = 1.0 if r.has_secondary else 2.0
-
-        # math.log10(1 + total_unexplored_minimizers_coverage(r)*total_unexplored_minimizers(r)) <= 1 \
-        #if total_unexplored_minimizers(r) <= 100 or \
-        #        (r.uncapped_map_q > 1000 and total_explored_minimizers_coverage(r) > 2) \
-        #        or (r.uncapped_map_q >= 60 and r.alignment_score >= 160 and total_explored_minimizers_coverage(r) > 2):
-        #    #escape_cap -= 30
-        #    escape_bonus = 2.0
 
         #cap = round(0.85 * min(escape_bonus + r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
         cap = round(min(escape_bonus + r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
@@ -729,8 +720,8 @@ def main():
     stages = {}
     total_wrong = 0
     for i, read in enumerate(reads.reads):
-        if not read.correct and current_cap(read) >= 20: # and read.stage == "cluster":
-            #print("Read {} {}".format(i, read))
+        if not read.correct and current_cap(read) >= 50: # and read.stage == "cluster":
+            print("Read {} {}".format(i, read))
             if read.stage not in stages:
                 stages[read.stage] = 0
             stages[read.stage] += 1
@@ -756,7 +747,7 @@ def main():
         for read in read_subset:
             if read.capped_map_q >= 0:
                 total_read_count += 1
-                if read.alignment_score >= 100 and (read.uncapped_map_q >= 1000 or (read.uncapped_map_q >= 20 and read.avg_unexplored_minimizers() <= 10)):
+                if max(read.alignment_scores) >= 100 and (read.uncapped_map_q >= 1000 or (read.uncapped_map_q >= 20 and read.avg_unexplored_minimizers() <= 10)):
                         #math.log10(1 + total_unexplored_minimizers_coverage(read)*total_unexplored_minimizers(read)) <= 1): # or read.faster_unique_cap() > 30):
                     read_count += 1
                     if read.stage not in stages:
