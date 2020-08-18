@@ -34,20 +34,26 @@ class PairedRead(Read):
         # (4) Mapq extend cap is Adam's cap, the same as for single end
 
         tokens = line.split()
+        # read sequence, quality,
         self._parse_read(tokens, correct)
 
+        # fragment clusters, bool read was found by rescue, bool read was used to rescue its pair, fragment length,
         self.fragment_clusters, self.rescued, self.rescuer, self.fragment_length = \
             int(tokens[2]), bool(int(tokens[3])), bool(int(tokens[4])), int(tokens[5])
 
-        # raw mapq, adam's mapq_extend_cap, my probability cluster lost cap,  last correct stage
-        self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.stage = \
-            float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+        # uncapped mapq, old xian cap, mapq of score group, adam cap, new xian cap, final mapq, ((alignment score)xA)xF,
+        # (#fragment clusters kept / # fragments clusters with a cluster from the first read kept / # fragment clusters with a cluster from the second read kept / # equivalent clusters / sum of best cluster scores for each read)xF, last correct stage
+        self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.alignment_scores, self.cluster_scores, self.stage = \
+            float(tokens[-9]), float(tokens[-8]), float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), tokens[-3], tokens[-2], tokens[-1]
+
+        self.alignment_scores = sorted([float(i.replace(";", "")) for i in self.alignment_scores.split(",") if i.replace(";", "") != ""])
 
         if self.uncapped_map_q < 0:
             self.uncapped_map_q = 0
 
+        # (minimizer, offset of minimizer in read, agglomeration start, agglomeration length,  # hits, # hits in a cluster that got aligned)xN,
         try:
-            self._parse_minimizers(tokens[6:-7])
+            self._parse_minimizers(tokens[6:-9])
         except ValueError:
             # Probably a single-end read
             raise UnacceptableReadError("Probably single-ended")
@@ -77,14 +83,19 @@ class PairedRead(Read):
     def parse_reads(reads_file, correct=True, mixed=False, max_reads=-1):
         reads = []
         pair = None
-        with open(reads_file) as fh:  # This masks a bug
+        with open(reads_file) as fh:
+            header_line = True
             for line in fh:
+                if header_line:
+                    header_line = False
+                    continue
+
                 if mixed:  # Deal with read pairs where one is correctly
                     # mapped and the other is not
                     tokens = line.split()
                     correct = bool(int(tokens[-1]))
                     line = "\t".join(tokens[:-1])
-                
+
                 #try:
                 reads.append(PairedRead(line, correct))
                 #except UnacceptableReadError:
@@ -93,6 +104,7 @@ class PairedRead(Read):
                     reads[-1].pair = pair
                     pair.pair = reads[-1]
                     pair = None
+                    header_line = True
                 else:
                     pair = reads[-1]
                 if max_reads != -1 and pair is None and len(reads) > max_reads:
@@ -113,9 +125,9 @@ def main():
     start_time = time.time()
 
     # Parse the reads
-    reads = PairedReads("minimizers_1kg_paired/minimizers_correct_paired",
-                        "minimizers_1kg_paired/minimizers_incorrect_paired",
-                        "minimizers_1kg_paired/minimizers_mixed_paired",
+    reads = PairedReads("minimizers_1kg_paired/minimizers_correct",
+                        "minimizers_1kg_paired/minimizers_incorrect",
+                        "minimizers_1kg_paired/minimizers_mixed",
                         max_correct_reads=10000)
 
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
