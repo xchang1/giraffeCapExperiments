@@ -11,7 +11,7 @@ class PairedRead(Read):
     Represents one end of a paired read and its minimizers
     """
 
-    def __init__(self, line, correct):
+    def __init__(self, line, correct, alignment_pairs, fragment_length_scores):
         # Format is tab sep (on one line):
         # READ_STR, QUAL_STR,  # fragment clusters,
         # bool read was found by rescue, bool read was used to rescue its pair,
@@ -46,7 +46,18 @@ class PairedRead(Read):
         self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.alignment_scores, self.cluster_scores, self.stage = \
             float(tokens[-9]), float(tokens[-8]), float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), tokens[-3], tokens[-2], tokens[-1]
 
-        self.alignment_scores = sorted([float(i.replace(";", "")) for i in self.alignment_scores.split(",") if i.replace(";", "") != ""])
+        self.fragment_length_scores = fragment_length_scores
+        #print("howdy", fragment_length_scores)
+        self.alignment_pairs = alignment_pairs
+        self.alignment_scores = sorted(fragment_length_scores)
+
+        #print("Alignment scores", self.alignment_scores)
+
+        #[[float(j) for j in i.split(",") if j != ""] for i in self.alignment_scores.split(";") if i != ""]
+        #print("hello", self.fragment_length_scores, self.alignment_pairs, self.alignment_scores)
+        #assert(len(alignment_pairs) == len(self.alignment_scores))
+
+        #self.alignment_scores = sorted([float(i.replace(";", "")) for i in self.alignment_scores.split(";") if i.replace(";", "") != ""])
 
         if self.uncapped_map_q < 0:
             self.uncapped_map_q = 0
@@ -64,6 +75,8 @@ class PairedRead(Read):
         self._check_minimizers()
 
         self.pair = None  # Pair is initially none
+
+        self.faster_cap_precomputed = self.faster_cap()  # Precompute the faster cap
 
     def __str__(self):
         return "Read uncapped_map_q:{} rescued: {} rescuer: {} fragment_clusters: {} fragment_length: {} \n" \
@@ -85,8 +98,19 @@ class PairedRead(Read):
         pair = None
         with open(reads_file) as fh:
             header_line = True
+            inverted_alignment_pairs, alignment_pairs, fragment_length_scores = None, None, None
             for line in fh:
                 if header_line:
+                    tokens = line.split()
+                    alignment_pairs = [[int(j) for j in i.split(",") if j != ""]
+                                       for i in tokens[0].split(";") if i != ""]
+                    inverted_alignment_pairs = [(k,l,i,j) for (i,j,k,l) in alignment_pairs]
+
+                    if len(tokens) > 1:
+                        fragment_length_scores = [float(i) for i in tokens[1].split(",") if i != ""]
+                    else:
+                        fragment_length_scores = [0.0]
+                    #assert len(alignment_pairs) == len(fragment_length_scores)
                     header_line = False
                     continue
 
@@ -96,15 +120,15 @@ class PairedRead(Read):
                     correct = bool(int(tokens[-1]))
                     line = "\t".join(tokens[:-1])
 
-                #try:
-                reads.append(PairedRead(line, correct))
-                #except UnacceptableReadError:
-                #    continue
+                reads.append(PairedRead(line, correct, alignment_pairs if pair is None else inverted_alignment_pairs,
+                                        fragment_length_scores))
+
                 if pair is not None:  # Has a pair
                     reads[-1].pair = pair
                     pair.pair = reads[-1]
                     pair = None
                     header_line = True
+                    inverted_alignment_pairs, alignment_pairs, fragment_length_scores = None, None, None
                 else:
                     pair = reads[-1]
                 if max_reads != -1 and pair is None and len(reads) > max_reads:
