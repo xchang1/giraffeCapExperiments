@@ -61,8 +61,10 @@ class PairedRead(Read):
             self.alignment_scores = []
             self.multiplicities = []
             for (score1, score2, log_likelihood, multiplicity, pair_score) in all_aln_scores:
+                assert(abs(score1 + score2 + log_likelihood - pair_score) <= 1)
                 self.alignment_scores.append(pair_score)
                 self.multiplicities.append(multiplicity)
+            self.alignment_scores = sorted(self.alignment_scores)
 
 
         #print("Alignment scores", self.alignment_scores)
