@@ -11,7 +11,7 @@ class PairedRead(Read):
     Represents one end of a paired read and its minimizers
     """
 
-    def __init__(self, line, correct, alignment_pairs, fragment_length_scores):
+    def __init__(self, line, correct):
         # Format is tab sep (on one line):
         # READ_STR, QUAL_STR,  # fragment clusters,
         # bool read was found by rescue, bool read was used to rescue its pair,
@@ -41,15 +41,29 @@ class PairedRead(Read):
         self.fragment_clusters, self.rescued, self.rescuer, self.fragment_length = \
             int(tokens[2]), bool(int(tokens[3])), bool(int(tokens[4])), int(tokens[5])
 
-        # uncapped mapq, old xian cap, mapq of score group, adam cap, new xian cap, final mapq, ((alignment score)xA)xF,
-        # (#fragment clusters kept / # fragments clusters with a cluster from the first read kept / # fragment clusters with a cluster from the second read kept / # equivalent clusters / sum of best cluster scores for each read)xF, last correct stage
-        self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.alignment_scores, self.cluster_scores, self.stage = \
-            float(tokens[-9]), float(tokens[-8]), float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), tokens[-3], tokens[-2], tokens[-1]
+        unmapped = ";" not in tokens[-2]
 
-        self.fragment_length_scores = fragment_length_scores
-        #print("howdy", fragment_length_scores)
-        self.alignment_pairs = alignment_pairs
-        self.alignment_scores = sorted(fragment_length_scores)
+        if unmapped:
+            #If this was unmapped and has no minimizers, we'd miss the alignment score token so everything would be off by token
+            self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.stage = \
+                float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
+            self.alignment_scores = []
+            self.multiplicities = []
+
+        else:
+            # uncapped mapq, old xian cap, mapq of score group, adam cap, new xian cap, final mapq, (alignment score1, alignment score 2, fragment length log
+            # likelihood, multiplicity, score of alignment pair)xN last correct stage
+            self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.stage = \
+                float(tokens[-8]), float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), tokens[-1]
+
+            #print("howdy", fragment_length_scores)
+            all_aln_scores = [tuple(float(x) for x in token.split(",")) for token in tokens[-2].split(";")[:-1]] 
+            self.alignment_scores = []
+            self.multiplicities = []
+            for (score1, score2, log_likelihood, multiplicity, pair_score) in all_aln_scores:
+                self.alignment_scores.append(pair_score)
+                self.multiplicities.append(multiplicity)
+
 
         #print("Alignment scores", self.alignment_scores)
 
@@ -62,15 +76,19 @@ class PairedRead(Read):
         if self.uncapped_map_q < 0:
             self.uncapped_map_q = 0
 
-        # (minimizer, offset of minimizer in read, agglomeration start, agglomeration length,  # hits, # hits in a cluster that got aligned)xN,
-        try:
-            self._parse_minimizers(tokens[6:-9])
-        except ValueError:
-            # Probably a single-end read
-            raise UnacceptableReadError("Probably single-ended")
-        except IndexError:
-            # Probably a single-end read
-            raise UnacceptableReadError("Probably single-ended")
+        if not unmapped:
+
+            # (minimizer, offset of minimizer in read, agglomeration start, agglomeration length,  # hits, # hits in a cluster that got aligned)xN,
+            try:
+                self._parse_minimizers(tokens[6:-8])
+            except ValueError:
+                # Probably a single-end read
+                raise UnacceptableReadError("Probably single-ended")
+            except IndexError:
+                # Probably a single-end read
+                raise UnacceptableReadError("Probably single-ended")
+        else:
+            self.minimizers = []
 
         self._check_minimizers()
 
@@ -97,38 +115,19 @@ class PairedRead(Read):
         reads = []
         pair = None
         with open(reads_file) as fh:
-            header_line = True
-            inverted_alignment_pairs, alignment_pairs, fragment_length_scores = None, None, None
             for line in fh:
-                if header_line:
-                    tokens = line.split()
-                    alignment_pairs = [[int(j) for j in i.split(",") if j != ""]
-                                       for i in tokens[0].split(";") if i != ""]
-                    inverted_alignment_pairs = [(k,l,i,j) for (i,j,k,l) in alignment_pairs]
-
-                    if len(tokens) > 1:
-                        fragment_length_scores = [float(i) for i in tokens[1].split(",") if i != ""]
-                    else:
-                        fragment_length_scores = [0.0]
-                    #assert len(alignment_pairs) == len(fragment_length_scores)
-                    header_line = False
-                    continue
-
                 if mixed:  # Deal with read pairs where one is correctly
                     # mapped and the other is not
                     tokens = line.split()
                     correct = bool(int(tokens[-1]))
                     line = "\t".join(tokens[:-1])
 
-                reads.append(PairedRead(line, correct, alignment_pairs if pair is None else inverted_alignment_pairs,
-                                        fragment_length_scores))
+                reads.append(PairedRead(line, correct))
 
                 if pair is not None:  # Has a pair
                     reads[-1].pair = pair
                     pair.pair = reads[-1]
                     pair = None
-                    header_line = True
-                    inverted_alignment_pairs, alignment_pairs, fragment_length_scores = None, None, None
                 else:
                     pair = reads[-1]
                 if max_reads != -1 and pair is None and len(reads) > max_reads:
