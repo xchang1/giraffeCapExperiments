@@ -166,8 +166,12 @@ class Read:
 
         self.uncapped_map_q, self.vg_computed_cap, self.xian_cap, self.capped_map_q = \
             float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4])
-        self.clusters, self.alignment_scores, self.stage = [i for i in tokens[-3].split(",") if i != ""], \
-                sorted([float(i) for i in tokens[-2].split(",") if i != ""]), tokens[-1]
+        self.clusters, self.alignment_scores, self.stage = [[float(j) for j in i.split("/")] for i in tokens[-3].split(",") if i != ""], \
+                [float(i) for i in tokens[-2].split(",") if i != ""], tokens[-1]
+
+        # Sort the clusters/alignment scores into tuples
+        self.clusters = sorted(list(zip(self.alignment_scores, self.clusters)))
+        self.alignment_scores = sorted(self.alignment_scores)
 
         self._parse_minimizers(tokens[3:-7])
 
@@ -211,10 +215,11 @@ class Read:
                 raise UnacceptableReadError(str(self))
 
     def __str__(self):
-        return "Read correct:{} alignment_count:{} primary_alignment_score:{} alignment_scores:{} uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
+        return "Read correct:{} alignment_count:{} primary_alignment_score:{} alignment_scores:{} cluster_scores:{} uncapped_map_q:{} vg_computed_cap:{} xian_cap:{} faster_cap:{} unique_cap:{} balanced_cap:{} stage: {}" \
             "\n\tread_string: {}\n\tqual_string: {} \n {}\n".format(self.correct, len(self.alignment_scores),
                                                                     max(self.alignment_scores),
-                                                                    self.alignment_scores, self.uncapped_map_q,
+                                                                    self.alignment_scores, self.clusters,
+                                                                    self.uncapped_map_q,
                                                                     self.vg_computed_cap, self.xian_cap,
                                                                     self.faster_cap(), self.faster_unique_cap(),
                                                                     self.faster_balanced_cap(), self.stage,
@@ -693,27 +698,11 @@ def main():
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
     def proposed_cap(r):
-        escape_bonus = 0.0 if r.uncapped_map_q < 1000 else 20
-        #escape_bonus = 0.0 if total_unexplored_minimizers(r) >= 10 else 20
-
-        #escape_bonus = 1.0
-        #if r.alignment_score >= 0 and (r.uncapped_map_q >= 1000 or (
-        #            total_unexplored_minimizers(r) <= 100)):
-        #    escape_bonus = 2.0
-        #if
-
-        #cap = round(0.85 * min(escape_bonus + r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
-        cap = round(min(escape_bonus + r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
+        escape_bonus = 1.0 if r.uncapped_map_q < 1000 else 2.0
+        cap = round(min(escape_bonus * r.faster_cap(), r.xian_cap, r.uncapped_map_q, 60))
         return cap
 
     def current_cap(r):
-        """
-        if r.xian_cap != p_inf:
-            print("what", r.capped_map_q, int(min(r.uncapped_map_q, r.xian_cap, r.vg_computed_cap, 60)), r.uncapped_map_q, r.xian_cap, r.vg_computed_cap)
-        if r.capped_map_q != int(min(r.uncapped_map_q, r.xian_cap, r.vg_computed_cap, 60)):
-            print("wait", r.capped_map_q, int(min(r.uncapped_map_q, r.xian_cap, r.vg_computed_cap, 60)),
-                  r.uncapped_map_q, r.xian_cap, r.vg_computed_cap)
-        """
         return r.capped_map_q  # round(min(r.uncapped_map_q, f(r.xian_cap), r.vg_computed_cap, 60))
 
     #  Print some of the funky reads
@@ -747,7 +736,7 @@ def main():
         for read in read_subset:
             if read.capped_map_q >= 0:
                 total_read_count += 1
-                if max(read.alignment_scores) >= 100 and (read.uncapped_map_q >= 1000 or (read.uncapped_map_q >= 20 and read.avg_unexplored_minimizers() <= 10)):
+                if read.alignment_scores[-1][0] >= 100 and (read.uncapped_map_q >= 1000 or (read.uncapped_map_q >= 20 and read.avg_unexplored_minimizers() <= 10)):
                         #math.log10(1 + total_unexplored_minimizers_coverage(read)*total_unexplored_minimizers(read)) <= 1): # or read.faster_unique_cap() > 30):
                     read_count += 1
                     if read.stage not in stages:

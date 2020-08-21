@@ -157,23 +157,10 @@ def main():
 
     print("Got ", len(reads.reads), " in ", time.time() - start_time, " seconds")
 
-    def f(x):  # Remove 0 values from mapq calcs
-        return x if x != n_inf else p_inf  # the str 0.0 is there because -0.0 is actually 0
-
     def proposed_cap(r):
-        # The proposed map_q function
-
-        # Note the f function is different to f2 in the current cap - I suspect a bug in the way that
-        # the way we modify the score_group_map_q and xian_cap exists in Giraffe
-        # that treats 0.0s weirdly.
-
-        # r.score_group_map_q/6.0,
-
-        #return int(min(r.xian_new_cap, (r.faster_cap() + r.pair.faster_cap()),
-        #               r.uncapped_map_q, 60))
-
-        return int(min(r.xian_cap, (r.faster_cap() + r.pair.faster_cap()),
-                       r.uncapped_map_q, 60))
+        escape_bonus = 1.0 if r.uncapped_map_q < 1000 else 2.0
+        return int(min(r.xian_cap, escape_bonus * (r.faster_cap() + r.pair.faster_cap()),
+                       r.uncapped_map_q, 120)/2.0)
 
     def current_cap(r):
         """
