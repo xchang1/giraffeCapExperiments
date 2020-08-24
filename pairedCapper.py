@@ -67,15 +67,14 @@ class PairedRead(Read):
                                                            'equivalent_clusters', 'equivalent_clusters_kept',
                                                            'cluster_score', 'alignment_score'])
 
-            alignment_scores = []
+            self.alignment_scores = []
             #print(all_aln_scores)
             for score1, score2, log_likelihood, multiplicity, equivalent_or_better_clusters, equivalent_clusters, \
                     equivalent_clusters_kept, cluster_score, alignment_score in all_aln_scores:
-                alignment_scores.append(AlignmentScore(score1, score2, log_likelihood, multiplicity,
+                self.alignment_scores.append(AlignmentScore(score1, score2, log_likelihood, multiplicity,
                                                        equivalent_or_better_clusters, equivalent_clusters,
                                                        equivalent_clusters_kept, cluster_score, alignment_score))
 
-            self.alignment_scores = sorted(alignment_scores, key=lambda x : x.alignment_score)
 
 
         #print("Alignment scores", self.alignment_scores)
