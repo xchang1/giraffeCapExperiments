@@ -4,6 +4,7 @@ from capper import Read, Reads, n_inf, p_inf, UnacceptableReadError
 import matplotlib.pyplot as plt
 import time
 import math
+from collections import namedtuple
 
 
 class PairedRead(Read):
@@ -48,8 +49,6 @@ class PairedRead(Read):
             self.uncapped_map_q, self.xian_cap, self.score_group_map_q, self.vg_computed_cap, self.xian_new_cap, self.capped_map_q, self.stage = \
                 float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), float(tokens[-2]), tokens[-1]
             self.alignment_scores = []
-            self.multiplicities = []
-
         else:
             # uncapped mapq, old xian cap, mapq of score group, adam cap, new xian cap, final mapq, (alignment score1, alignment score 2, fragment length log
             # likelihood, multiplicity, score of alignment pair)xN last correct stage
@@ -57,14 +56,26 @@ class PairedRead(Read):
                 float(tokens[-8]), float(tokens[-7]), float(tokens[-6]), float(tokens[-5]), float(tokens[-4]), float(tokens[-3]), tokens[-1]
 
             #print("howdy", fragment_length_scores)
-            all_aln_scores = [tuple(float(x) for x in token.split(",")) for token in tokens[-2].split(";")[:-1]] 
-            self.alignment_scores = []
-            self.multiplicities = []
-            for (score1, score2, log_likelihood, multiplicity, pair_score) in all_aln_scores:
-                assert(abs(score1 + score2 + log_likelihood - pair_score) <= 1)
-                self.alignment_scores.append(pair_score)
-                self.multiplicities.append(multiplicity)
-            self.alignment_scores = sorted(self.alignment_scores)
+            all_aln_scores = [tuple(float(x) for x in token.split(",")) for token in tokens[-2].split(";")[:-1]]
+
+            # alignment score 1, alignment score 2, fragment length log likelihood, multiplicity,
+            # count of equivalent or better clusters(for old xian cap),
+            # count of equivalent clusters kept, count of equivalent clusters, cluster score, score of alignment pair
+
+            AlignmentScore = namedtuple("AlignmentScore", ['score1', 'score2', 'log_likelihood', 'multiplicity',
+                                                           'equivalent_or_better_clusters',
+                                                           'equivalent_clusters', 'equivalent_clusters_kept',
+                                                           'cluster_score', 'alignment_score'])
+
+            alignment_scores = []
+            #print(all_aln_scores)
+            for score1, score2, log_likelihood, multiplicity, equivalent_or_better_clusters, equivalent_clusters, \
+                    equivalent_clusters_kept, cluster_score, alignment_score in all_aln_scores:
+                alignment_scores.append(AlignmentScore(score1, score2, log_likelihood, multiplicity,
+                                                       equivalent_or_better_clusters, equivalent_clusters,
+                                                       equivalent_clusters_kept, cluster_score, alignment_score))
+
+            self.alignment_scores = sorted(alignment_scores)
 
 
         #print("Alignment scores", self.alignment_scores)
