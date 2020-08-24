@@ -75,7 +75,7 @@ class PairedRead(Read):
                                                        equivalent_or_better_clusters, equivalent_clusters,
                                                        equivalent_clusters_kept, cluster_score, alignment_score))
 
-            self.alignment_scores = sorted(alignment_scores)
+            self.alignment_scores = sorted(alignment_scores, key=lambda x : x.alignment_score)
 
 
         #print("Alignment scores", self.alignment_scores)
